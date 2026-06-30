@@ -308,15 +308,11 @@ function generateSubscription(nodesList) {
   
   return nodesList
     .map((node, index) => {
-      // Создаём копию ноды с новым именем
       const newNode = { ...node };
       newNode.name = renameNode(node, index);
       
-      // Пересобираем raw ссылку с новым именем (упрощённо)
-      // Для большинства протоколов достаточно заменить hash/remarks
       let newRaw = node.raw;
       
-      // Простая замена имени в ссылке (для vless/trojan/hysteria2)
       if (newRaw.includes('#')) {
         newRaw = newRaw.split('#')[0] + '#' + encodeURIComponent(newNode.name);
       } else if (newRaw.includes('remarks=')) {
@@ -365,21 +361,19 @@ async function updateNodes() {
       allNodes.push(...fetched);
     }
 
-    // Deduplicate
     const seen = new Set();
     const unique = [];
     for (const node of allNodes) {
       const key = `${node.server}:${node.port}:${node.protocol}`;
       if (!seen.has(key)) {
         seen.add(key);
-        node.country = getCountry(node); // Сразу определяем страну
+        node.country = getCountry(node);
         unique.push(node);
       }
     }
 
     console.log(`Unique nodes: ${unique.length}`);
 
-    // Test in batches
     const tested = [];
     const batchSize = 25;
     for (let i = 0; i < unique.length; i += batchSize) {
@@ -388,10 +382,7 @@ async function updateNodes() {
       tested.push(...results);
     }
 
-    // Filter alive
     let alive = tested.filter(n => n.alive && n.latency !== null);
-
-    // Sort by latency
     alive.sort((a, b) => a.latency - b.latency);
 
     nodes = alive;
@@ -407,18 +398,15 @@ async function updateNodes() {
 
 // ==================== SUBSCRIPTION GENERATORS ====================
 
-// 1. /best — Топ-20 самых быстрых
 function getBest() {
-  return deduplicateNodes(nodes).slice(0, TOP_LIMIT);
+  return deduplicateNodes(nodes).slice(0, CONFIG.topLimit);
 }
 
-// 2. /good — Следующие 20 (21-40)
 function getGood() {
   const deduped = deduplicateNodes(nodes);
-  return deduped.slice(TOP_LIMIT, TOP_LIMIT * 2);
+  return deduped.slice(CONFIG.topLimit, CONFIG.topLimit * 2);
 }
 
-// 3. /diverse — По 1 ключу из каждой страны
 function getDiverseCountries() {
   const countryMap = new Map();
   
@@ -430,10 +418,9 @@ function getDiverseCountries() {
 
   let diverse = Array.from(countryMap.values());
   diverse.sort((a, b) => a.latency - b.latency);
-  return diverse.slice(0, TOP_LIMIT);
+  return diverse.slice(0, CONFIG.topLimit);
 }
 
-// 4. /multi — 8 VLESS + 4 Trojan + 4 SS + 4 Hysteria2
 function getMultiProtocol() {
   const deduped = deduplicateNodes(nodes);
 
@@ -443,12 +430,11 @@ function getMultiProtocol() {
   const hysteria = deduped.filter(n => n.protocol === 'hysteria2').slice(0, 4);
 
   const mixed = [...vless, ...trojan, ...ss, ...hysteria];
-  return deduplicateNodes(mixed).slice(0, 20);
+  return deduplicateNodes(mixed).slice(0, CONFIG.topLimit);
 }
 
-// Полная подписка
 function getFull() {
-  return deduplicateNodes(nodes).slice(0, MAX_NODES);
+  return deduplicateNodes(nodes).slice(0, CONFIG.maxNodesPerSub);
 }
 
 // ==================== ROUTES ====================
@@ -456,17 +442,10 @@ function getFull() {
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'VPN Aggregator (Single File)',
+    message: `${CONFIG.name} v${CONFIG.version}`,
     nodes: nodes.length,
     lastUpdated,
-    endpoints: [
-      '/best',
-      '/good', 
-      '/diverse',
-      '/multi',
-      '/full',
-      '/status'
-    ]
+    endpoints: ['/best', '/good', '/diverse', '/multi', '/full', '/status']
   });
 });
 
@@ -484,7 +463,7 @@ app.get('/status', (req, res) => {
   });
 });
 
-// ==================== NEW SUBSCRIPTION ENDPOINTS ====================
+// ==================== SUBSCRIPTION ENDPOINTS ====================
 
 app.get('/best', (req, res) => {
   const list = getBest();
