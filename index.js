@@ -219,7 +219,9 @@ function parseSubscription(rawText) {
       if (decoded.includes('vless://') || 
           decoded.includes('vmess://') || 
           decoded.includes('trojan://') || 
-          decoded.includes('ss://')) {
+          decoded.includes('ss://') ||
+          decoded.includes('hysteria2://') ||
+          decoded.includes('hy2://')) {
         
         console.log('📦 Обнаружен base64 — успешно декодировано');
         text = decoded;
@@ -388,17 +390,26 @@ async function fetchSubscription(url, retries = 2) {
       const res = await axios.get(url, {
         timeout: 18000,
         headers: {
+          // ВАЖНО: 'Accept: */*', а НЕ 'text/html'.
+          // Многие панели подписок (в т.ч. AccarVPN) при Accept: text/html
+          // считают, что зашёл браузер, и отдают HTML-страницу вместо конфигов.
           'User-Agent': CONFIG.userAgent,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
+          'Accept': '*/*'
         },
-        maxRedirects: 5
+        maxRedirects: 5,
+        // Не даём axios преобразовывать тело — нам нужна сырая строка с подпиской.
+        responseType: 'text',
+        transformResponse: [(data) => data]
       });
 
-      const parsed = parseSubscription(res.data);
+      // ---- Диагностика ответа ----
+      const body = typeof res.data === 'string' ? res.data : String(res.data ?? '');
+      const ct = res.headers?.['content-type'] || 'unknown';
+      const looksHtml = body.trimStart().toLowerCase().startsWith('<!doctype') ||
+                        body.trimStart().toLowerCase().startsWith('<html');
+      console.log(`  ↳ status=${res.status} content-type=${ct} bytes=${body.length}${looksHtml ? ' ⚠️ ПОХОЖЕ НА HTML-СТРАНИЦУ' : ''}`);
+
+      const parsed = parseSubscription(body);
       console.log(`✓ Fetched from ${url} → ${parsed.length} nodes`);
       return parsed;
 
