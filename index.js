@@ -197,19 +197,48 @@ function parseHysteria2(link) {
 }
 
 function parseSubscription(rawText) {
-  const lines = rawText.trim().split(/\r?\n/);
+  let text = rawText.trim();
+
+  // Автоматическое декодирование base64 (многие подписки отдают base64)
+  if (!text.includes('vless://') && 
+      !text.includes('vmess://') && 
+      !text.includes('trojan://') && 
+      !text.includes('ss://')) {
+    
+    try {
+      // Пробуем декодировать как base64
+      const decoded = Buffer.from(text, 'base64').toString('utf8');
+      if (decoded.includes('vless://') || decoded.includes('vmess://')) {
+        console.log('📦 Обнаружен base64 — декодируем');
+        text = decoded;
+      } else {
+        console.log('⚠️ Ответ не похож на VPN-подписку');
+      }
+    } catch (e) {
+      // Не base64 — оставляем как есть
+    }
+  }
+
+  const lines = text.split(/\r?\n/);
   const nodes = [];
+
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
+
     let node = null;
+
     if (line.startsWith('vmess://')) node = parseVmess(line);
     else if (line.startsWith('vless://')) node = parseVless(line);
     else if (line.startsWith('trojan://')) node = parseTrojan(line);
     else if (line.startsWith('ss://')) node = parseShadowsocks(line);
     else if (line.startsWith('hysteria2://') || line.startsWith('hy2://')) node = parseHysteria2(line);
-    if (node && node.server && node.port) nodes.push(node);
+
+    if (node && node.server && node.port) {
+      nodes.push(node);
+    }
   }
+
   return nodes;
 }
 
@@ -355,8 +384,9 @@ async function fetchSubscription(url, retries = 2) {
         maxRedirects: 5
       });
 
-      console.log(`✓ Fetched from ${url} using ${CONFIG.userAgent}`);
-      return parseSubscription(res.data);
+      const parsed = parseSubscription(res.data);
+      console.log(`✓ Fetched from ${url} → ${parsed.length} nodes`);
+      return parsed;
 
     } catch (err) {
       const isLastAttempt = attempt === retries;
