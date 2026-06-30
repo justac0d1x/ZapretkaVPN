@@ -31,7 +31,10 @@ const CONFIG = {
   topLimit: parseInt(process.env.TOP_LIMIT || '20'),
 
   // === Формат имени ноды ===
-  nodeNameFormat: process.env.NODE_NAME_FORMAT || "[flag] [country] #[number]"
+  nodeNameFormat: process.env.NODE_NAME_FORMAT || "[flag] [country] #[number]",
+
+  // === User-Agent для запросов подписок ===
+  userAgent: process.env.USER_AGENT || "HiddifyNext/2.0.5"
 };
 
 // ==================== COUNTRY NAMES ====================
@@ -336,17 +339,39 @@ function deduplicateNodes(nodeList) {
 
 // ==================== UPDATE LOGIC ====================
 
-async function fetchSubscription(url) {
-  try {
-    const res = await axios.get(url, {
-      timeout: 15000,
-      headers: { 'User-Agent': 'v2rayNG/1.8.0' }
-    });
-    return parseSubscription(res.data);
-  } catch (err) {
-    console.error(`Fetch failed: ${url} - ${err.message}`);
-    return [];
+async function fetchSubscription(url, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        timeout: 18000,
+        headers: {
+          'User-Agent': CONFIG.userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        maxRedirects: 5
+      });
+
+      console.log(`✓ Fetched from ${url} using ${CONFIG.userAgent}`);
+      return parseSubscription(res.data);
+
+    } catch (err) {
+      const isLastAttempt = attempt === retries;
+      
+      if (isLastAttempt) {
+        console.error(`✗ Fetch failed after ${retries + 1} attempts: ${url} - ${err.message}`);
+        return [];
+      } else {
+        console.warn(`⚠️ Attempt ${attempt + 1} failed for ${url}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1200));
+      }
+    }
   }
+  
+  return [];
 }
 
 async function updateNodes() {
