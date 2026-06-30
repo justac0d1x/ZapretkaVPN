@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 const CONFIG = {
   // === Основные настройки сервиса ===
   name: process.env.SERVICE_NAME || "Zapretka",
-  version: process.env.SERVICE_VERSION || "2.2.0",
+  version: process.env.SERVICE_VERSION || "3.0.0",
 
   // === Источники подписок ===
   subscriptionUrls: (process.env.SUBSCRIPTION_URLS || '')
@@ -513,46 +513,66 @@ async function updateNodes() {
   }
 }
 
-// ==================== SUBSCRIPTION GENERATORS ====================
+// ==================== CUSTOM FILTERING ====================
 
-function getBest() {
-  return deduplicateNodes(nodes).slice(0, CONFIG.topLimit);
+// Нормализует параметр: 'all'/'any'/'' → null (без фильтра),
+// иначе массив значений в нижнем регистре (поддержка списка через запятую).
+function parseFilterParam(value) {
+  if (value === undefined || value === null) return null;
+  const v = String(value).trim().toLowerCase();
+  if (v === '' || v === 'all' || v === 'any' || v === '*') return null;
+  return v.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-function getGood() {
-  const deduped = deduplicateNodes(nodes);
-  return deduped.slice(CONFIG.topLimit, CONFIG.topLimit * 2);
+// Алиасы протоколов, чтобы /sub/hy2/... и /sub/hysteria/... тоже работали.
+const protocolAliases = {
+  'hy2': 'hysteria2',
+  'hysteria': 'hysteria2',
+  'shadowsocks': 'ss',
+  'v2ray': 'vmess'
+};
+
+function normalizeProtocol(p) {
+  return protocolAliases[p] || p;
 }
 
-function getDiverseCountries() {
-  const countryMap = new Map();
-  
-  for (const node of nodes) {
-    if (!countryMap.has(node.country)) {
-      countryMap.set(node.country, node);
-    }
+// Главный фильтр: protocol + country + count.
+// protocolFilter / countryFilter: null = любой, либо массив допустимых значений.
+function filterNodes({ protocol, country, count }) {
+  const protoFilter = parseFilterParam(protocol)?.map(normalizeProtocol) || null;
+  const countryFilter = parseFilterParam(country)?.map(c => c.toUpperCase()) || null;
+
+  let list = deduplicateNodes(nodes);
+
+  if (protoFilter) {
+    list = list.filter(n => protoFilter.includes(n.protocol));
+  }
+  if (countryFilter) {
+    list = list.filter(n => countryFilter.includes((n.country || 'XX').toUpperCase()));
   }
 
-  let diverse = Array.from(countryMap.values());
-  diverse.sort((a, b) => a.latency - b.latency);
-  return diverse.slice(0, CONFIG.topLimit);
+  // Уже отсортировано по latency в updateNodes(), но пересортируем на всякий случай.
+  list = [...list].sort((a, b) => (a.latency ?? Infinity) - (b.latency ?? Infinity));
+
+  // count: целое > 0, либо без лимита.
+  const n = parseInt(count, 10);
+  if (Number.isFinite(n) && n > 0) {
+    list = list.slice(0, n);
+  } else {
+    list = list.slice(0, CONFIG.maxNodesPerSub);
+  }
+
+  return list;
 }
 
-function getMultiProtocol() {
-  const deduped = deduplicateNodes(nodes);
-
-  const vless   = deduped.filter(n => n.protocol === 'vless').slice(0, 8);
-  const trojan  = deduped.filter(n => n.protocol === 'trojan').slice(0, 4);
-  const ss      = deduped.filter(n => n.protocol === 'ss').slice(0, 4);
-  const hysteria = deduped.filter(n => n.protocol === 'hysteria2').slice(0, 4);
-
-  const mixed = [...vless, ...trojan, ...ss, ...hysteria];
-  return deduplicateNodes(mixed).slice(0, CONFIG.topLimit);
+// Отдаём подписку в base64 (как ожидают клиенты).
+function sendSubscription(res, list) {
+  const sub = generateSubscription(list);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Profile-Update-Interval', String(CONFIG.updateIntervalMinutes));
+  res.send(Buffer.from(sub).toString('base64'));
 }
 
-function getFull() {
-  return deduplicateNodes(nodes).slice(0, CONFIG.maxNodesPerSub);
-}
 
 // ==================== ROUTES ====================
 
@@ -562,17 +582,43 @@ app.get('/', (req, res) => {
     message: `${CONFIG.name} v${CONFIG.version}`,
     nodes: nodes.length,
     lastUpdated,
-    endpoints: ['/best', '/good', '/diverse', '/multi', '/full', '/status']
+    usage: {
+      custom: '/sub/:protocol/:country/:count',
+      examples: [
+        '/sub/vless/RU/10        → 10 быстрейших vless-нод из России',
+        '/sub/all/all/20         → 20 любых нод (любой протокол, любая страна)',
+        '/sub/vless/all/0        → все vless-ноды (count=0 = без лимита)',
+        '/sub/vless,trojan/RU,DE/15 → vless+trojan из RU и DE, до 15 шт',
+        '/sub/all/DE/5           → 5 нод из Германии'
+      ],
+      notes: [
+        "protocol: vless | vmess | trojan | ss | hysteria2 | all (можно списком через запятую)",
+        "country: ISO-код (RU, DE, US...) | all (можно списком через запятую)",
+        "count: число > 0, либо 0/all для всех нод"
+      ]
+    },
+    endpoints: ['/sub/:protocol/:country/:count', '/status', '/health']
   });
 });
 
 app.get('/health', (req, res) => res.json({ status: 'healthy' }));
 
 app.get('/status', (req, res) => {
+  // Сводка по протоколам и странам — удобно видеть, что вообще есть.
+  const byProtocol = {};
+  const byCountry = {};
+  for (const n of nodes) {
+    byProtocol[n.protocol] = (byProtocol[n.protocol] || 0) + 1;
+    const c = (n.country || 'XX').toUpperCase();
+    byCountry[c] = (byCountry[c] || 0) + 1;
+  }
+
   res.json({
     name: CONFIG.name,
     version: CONFIG.version,
     total: nodes.length,
+    byProtocol,
+    byCountry,
     lastUpdated,
     updateInProgress,
     urls: CONFIG.subscriptionUrls.length,
@@ -580,41 +626,30 @@ app.get('/status', (req, res) => {
   });
 });
 
-// ==================== SUBSCRIPTION ENDPOINTS ====================
+// ==================== CUSTOM SUBSCRIPTION ENDPOINT ====================
+// /sub/:protocol/:country/:count
+//   protocol — vless | vmess | trojan | ss | hysteria2 | all | список через запятую
+//   country  — RU | DE | US ... | all | список через запятую
+//   count    — число (>0); 0 или all = без лимита
+//
+// Параметры country и count необязательны:
+//   /sub/vless            → все vless, любая страна
+//   /sub/vless/RU         → vless из RU, без лимита по количеству
+//   /sub/vless/RU/10      → 10 быстрейших vless из RU
 
-app.get('/best', (req, res) => {
-  const list = getBest();
-  const sub = generateSubscription(list);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.send(Buffer.from(sub).toString('base64'));
+app.get('/sub/:protocol/:country/:count', (req, res) => {
+  const { protocol, country, count } = req.params;
+  sendSubscription(res, filterNodes({ protocol, country, count }));
 });
 
-app.get('/good', (req, res) => {
-  const list = getGood();
-  const sub = generateSubscription(list);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.send(Buffer.from(sub).toString('base64'));
+app.get('/sub/:protocol/:country', (req, res) => {
+  const { protocol, country } = req.params;
+  sendSubscription(res, filterNodes({ protocol, country, count: 0 }));
 });
 
-app.get('/diverse', (req, res) => {
-  const list = getDiverseCountries();
-  const sub = generateSubscription(list);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.send(Buffer.from(sub).toString('base64'));
-});
-
-app.get('/multi', (req, res) => {
-  const list = getMultiProtocol();
-  const sub = generateSubscription(list);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.send(Buffer.from(sub).toString('base64'));
-});
-
-app.get('/full', (req, res) => {
-  const list = getFull();
-  const sub = generateSubscription(list);
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.send(Buffer.from(sub).toString('base64'));
+app.get('/sub/:protocol', (req, res) => {
+  const { protocol } = req.params;
+  sendSubscription(res, filterNodes({ protocol, country: 'all', count: 0 }));
 });
 
 // ==================== CRON ====================
@@ -637,5 +672,6 @@ app.listen(PORT, () => {
   console.log(`🚀 ${CONFIG.name} v${CONFIG.version} running on port ${PORT}`);
   console.log(`📡 Subscriptions: ${CONFIG.subscriptionUrls.length}`);
   console.log(`🔄 Update every ${CONFIG.updateIntervalMinutes} minutes`);
-  console.log(`📍 Endpoints: /best | /good | /diverse | /multi | /full | /status`);
+  console.log(`📍 Endpoint: /sub/:protocol/:country/:count  (например /sub/vless/RU/10)`);
+  console.log(`📍 Также: /status | /health`);
 });
