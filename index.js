@@ -6,6 +6,8 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import geoip from 'geoip-lite';
 import base64 from 'base-64';
+import TelegramBot from 'node-telegram-bot-api';
+import QRCode from 'qrcode';
 
 dotenv.config();
 
@@ -16,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 const CONFIG = {
   // === Основные настройки сервиса ===
   name: process.env.SERVICE_NAME || "Zapretka",
-  version: process.env.SERVICE_VERSION || "3.1.0",
+  version: process.env.SERVICE_VERSION || "3.3.0",
 
   // === Источники подписок ===
   subscriptionUrls: (process.env.SUBSCRIPTION_URLS || '')
@@ -35,7 +37,13 @@ const CONFIG = {
   nodeNameFormat: process.env.NODE_NAME_FORMAT || "[flag] [country] #[number]",
 
   // === User-Agent для запросов подписок ===
-  userAgent: process.env.USER_AGENT || "HiddifyNext/2.0.5"
+  userAgent: process.env.USER_AGENT || "HiddifyNext/2.0.5",
+
+  // === Telegram-бот ===
+  botToken: process.env.BOT_TOKEN || '',
+  // Публичный URL сервиса, из которого бот строит ссылки-подписки.
+  // На Render это, например, https://zapretka.onrender.com
+  baseUrl: process.env.BASE_URL || ''
 };
 
 // ==================== COUNTRY NAMES ====================
@@ -640,6 +648,19 @@ function sendSubscription(res, list) {
 }
 
 
+// Сводка по живым нодам: total + разбивка по протоколам и странам.
+// Используется и эндпоинтом /status, и Telegram-ботом.
+function computeStats() {
+  const byProtocol = {};
+  const byCountry = {};
+  for (const n of nodes) {
+    byProtocol[n.protocol] = (byProtocol[n.protocol] || 0) + 1;
+    const c = (n.country || 'XX').toUpperCase();
+    byCountry[c] = (byCountry[c] || 0) + 1;
+  }
+  return { total: nodes.length, byProtocol, byCountry };
+}
+
 // ==================== ROUTES ====================
 
 app.get('/', (req, res) => {
@@ -670,21 +691,13 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => res.json({ status: 'healthy' }));
 
 app.get('/status', (req, res) => {
-  // Сводка по протоколам и странам — удобно видеть, что вообще есть.
-  const byProtocol = {};
-  const byCountry = {};
-  for (const n of nodes) {
-    byProtocol[n.protocol] = (byProtocol[n.protocol] || 0) + 1;
-    const c = (n.country || 'XX').toUpperCase();
-    byCountry[c] = (byCountry[c] || 0) + 1;
-  }
-
+  const stats = computeStats();
   res.json({
     name: CONFIG.name,
     version: CONFIG.version,
-    total: nodes.length,
-    byProtocol,
-    byCountry,
+    total: stats.total,
+    byProtocol: stats.byProtocol,
+    byCountry: stats.byCountry,
     lastUpdated,
     updateInProgress,
     urls: CONFIG.subscriptionUrls.length,
@@ -732,6 +745,285 @@ if (CONFIG.subscriptionUrls.length > 0) {
   console.log('⚠️ SUBSCRIPTION_URLS is empty. Add them in environment variables.');
 }
 
+// ==================== TELEGRAM BOT: конструктор подписок ====================
+// Бот-конструктор ссылок: пользователь через inline-кнопки выбирает
+// протокол → страну → количество и получает готовую ссылку вида
+//   https://<BASE_URL>/sub/vless/RU/10
+// плюс QR-код для быстрого импорта в клиент (Happ / v2rayNG / Hiddify и т.п.).
+// Работает в long-polling режиме, в том же процессе, что и веб-сервер.
+
+// Русские названия протоколов для кнопок.
+const PROTOCOL_LABELS = {
+  all: 'Любой протокол',
+  vless: 'VLESS',
+  vmess: 'VMess',
+  trojan: 'Trojan',
+  ss: 'Shadowsocks',
+  hysteria2: 'Hysteria2'
+};
+
+// Варианты количества для кнопок.
+const COUNT_OPTIONS = [5, 10, 20, 50, 0]; // 0 = все
+
+// Безопасное экранирование для HTML-разметки Telegram.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * startBot — поднимает Telegram-бота.
+ * @param {object} deps
+ * @param {string} deps.token        — токен бота (BOT_TOKEN)
+ * @param {string} deps.baseUrl      — базовый публичный URL сервиса (BASE_URL)
+ * @param {object} deps.countryNames — словарь { 'RU': 'Россия', ... }
+ * @param {function} deps.getStats   — () => { byProtocol:{}, byCountry:{}, total:number }
+ */
+function startBot({ token, baseUrl, countryNames, getStats }) {
+  if (!token) {
+    console.log('⚠️ BOT_TOKEN не задан — Telegram-бот не запущен.');
+    return null;
+  }
+  if (!baseUrl) {
+    console.log('⚠️ BASE_URL не задан — бот не сможет строить ссылки. Укажи BASE_URL в env.');
+    return null;
+  }
+
+  const base = baseUrl.replace(/\/+$/, ''); // без хвостового слэша
+  const bot = new TelegramBot(token, { polling: true });
+
+  // Хранилище незавершённых выборов: chatId -> { protocol, country }
+  const sessions = new Map();
+
+  const codeToName = (code) =>
+    (countryNames && countryNames[code]) ? countryNames[code] : code;
+
+  // ---------- Клавиатуры ----------
+
+  function protocolKeyboard() {
+    const stats = getStats();
+    const available = stats.byProtocol || {};
+    const rows = [];
+    let row = [];
+
+    // 'all' всегда доступен.
+    row.push({ text: PROTOCOL_LABELS.all, callback_data: 'p:all' });
+
+    for (const proto of ['vless', 'vmess', 'trojan', 'ss', 'hysteria2']) {
+      const cnt = available[proto] || 0;
+      if (cnt === 0) continue; // не показываем протоколы, которых нет
+      row.push({ text: `${PROTOCOL_LABELS[proto]} (${cnt})`, callback_data: `p:${proto}` });
+      if (row.length === 2) { rows.push(row); row = []; }
+    }
+    if (row.length) rows.push(row);
+
+    return { inline_keyboard: rows };
+  }
+
+  function countryKeyboard(protocol) {
+    const stats = getStats();
+    const byCountry = stats.byCountry || {};
+
+    // Список стран, отсортированный по числу нод (по убыванию).
+    const entries = Object.entries(byCountry)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1]);
+
+    const rows = [[{ text: '🌍 Любая страна', callback_data: 'c:all' }]];
+    let row = [];
+    for (const [code, n] of entries) {
+      row.push({ text: `${codeToName(code)} (${n})`, callback_data: `c:${code}` });
+      if (row.length === 2) { rows.push(row); row = []; }
+    }
+    if (row.length) rows.push(row);
+
+    rows.push([{ text: '« Назад к протоколу', callback_data: 'back:protocol' }]);
+    return { inline_keyboard: rows };
+  }
+
+  function countKeyboard() {
+    const rows = [];
+    let row = [];
+    for (const c of COUNT_OPTIONS) {
+      row.push({ text: c === 0 ? 'Все' : String(c), callback_data: `n:${c}` });
+      if (row.length === 3) { rows.push(row); row = []; }
+    }
+    if (row.length) rows.push(row);
+    rows.push([{ text: '« Назад к стране', callback_data: 'back:country' }]);
+    return { inline_keyboard: rows };
+  }
+
+  // ---------- Формирование итоговой ссылки ----------
+
+  function buildSubUrl({ protocol, country, count }) {
+    const p = protocol || 'all';
+    const c = country || 'all';
+    const n = (count === undefined || count === null) ? 0 : count;
+    return `${base}/sub/${p}/${c}/${n}`;
+  }
+
+  async function sendResult(chatId, sel) {
+    const url = buildSubUrl(sel);
+    const protoLabel = PROTOCOL_LABELS[sel.protocol] || sel.protocol;
+    const countryLabel = sel.country === 'all' ? 'Любая страна' : codeToName(sel.country);
+    const countLabel = (!sel.count || sel.count === 0) ? 'Все' : String(sel.count);
+
+    const caption =
+      `✅ <b>Ваша подписка готова</b>\n\n` +
+      `🔌 Протокол: <b>${escapeHtml(protoLabel)}</b>\n` +
+      `📍 Страна: <b>${escapeHtml(countryLabel)}</b>\n` +
+      `🔢 Количество: <b>${escapeHtml(countLabel)}</b>\n\n` +
+      `🔗 <code>${escapeHtml(url)}</code>\n\n` +
+      `Скопируйте ссылку или отсканируйте QR-код в вашем VPN-клиенте.`;
+
+    try {
+      const png = await QRCode.toBuffer(url, { width: 512, margin: 2 });
+      await bot.sendPhoto(chatId, png, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔄 Создать ещё', callback_data: 'restart' }]]
+        }
+      }, { filename: 'subscription.png', contentType: 'image/png' });
+    } catch (e) {
+      // Если QR не сгенерировался — хотя бы отправим ссылку текстом.
+      await bot.sendMessage(chatId, caption, {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🔄 Создать ещё', callback_data: 'restart' }]]
+        }
+      });
+    }
+  }
+
+  // ---------- Стартовое сообщение ----------
+
+  async function sendStart(chatId, messageId) {
+    const stats = getStats();
+    const total = stats.total || 0;
+    const text =
+      `👋 <b>Конструктор подписок</b>\n\n` +
+      `Сейчас доступно живых нод: <b>${total}</b>\n\n` +
+      `Шаг 1 из 3 — выберите протокол:`;
+
+    const opts = { parse_mode: 'HTML', reply_markup: protocolKeyboard() };
+    sessions.delete(chatId);
+
+    if (messageId) {
+      try {
+        await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+        return;
+      } catch { /* fallthrough to sendMessage */ }
+    }
+    await bot.sendMessage(chatId, text, opts);
+  }
+
+  // ---------- Команды ----------
+
+  bot.onText(/^\/start$/, (msg) => sendStart(msg.chat.id));
+
+  bot.onText(/^\/help$/, (msg) => {
+    bot.sendMessage(msg.chat.id,
+      `ℹ️ <b>Как пользоваться</b>\n\n` +
+      `1. /start — открыть конструктор\n` +
+      `2. Выберите протокол → страну → количество\n` +
+      `3. Получите ссылку и QR-код для импорта\n\n` +
+      `Ссылка имеет вид:\n<code>${escapeHtml(base)}/sub/&lt;протокол&gt;/&lt;страна&gt;/&lt;кол-во&gt;</code>`,
+      { parse_mode: 'HTML' });
+  });
+
+  // ---------- Обработка кнопок ----------
+
+  bot.on('callback_query', async (q) => {
+    const chatId = q.message.chat.id;
+    const messageId = q.message.message_id;
+    const data = q.data || '';
+
+    try {
+      // Перезапуск / возвраты могут потребовать пересоздать сообщение,
+      // т.к. предыдущее могло быть фото (его текст редактировать нельзя).
+      const editMenu = async (text, keyboard) => {
+        const opts = { parse_mode: 'HTML', reply_markup: keyboard };
+        try {
+          await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, ...opts });
+        } catch {
+          await bot.sendMessage(chatId, text, opts);
+        }
+      };
+
+      if (data === 'restart' || data === 'back:protocol') {
+        const stats = getStats();
+        sessions.delete(chatId);
+        await editMenu(
+          `👋 <b>Конструктор подписок</b>\n\nДоступно живых нод: <b>${stats.total || 0}</b>\n\nШаг 1 из 3 — выберите протокол:`,
+          protocolKeyboard()
+        );
+        return bot.answerCallbackQuery(q.id);
+      }
+
+      if (data.startsWith('p:')) {
+        const protocol = data.slice(2);
+        sessions.set(chatId, { protocol });
+        await editMenu(
+          `🔌 Протокол: <b>${escapeHtml(PROTOCOL_LABELS[protocol] || protocol)}</b>\n\nШаг 2 из 3 — выберите страну:`,
+          countryKeyboard(protocol)
+        );
+        return bot.answerCallbackQuery(q.id);
+      }
+
+      if (data === 'back:country') {
+        const sel = sessions.get(chatId) || {};
+        await editMenu(
+          `🔌 Протокол: <b>${escapeHtml(PROTOCOL_LABELS[sel.protocol] || sel.protocol || 'Любой')}</b>\n\nШаг 2 из 3 — выберите страну:`,
+          countryKeyboard(sel.protocol)
+        );
+        return bot.answerCallbackQuery(q.id);
+      }
+
+      if (data.startsWith('c:')) {
+        const country = data.slice(2);
+        const sel = sessions.get(chatId) || {};
+        sel.country = country;
+        sessions.set(chatId, sel);
+        await editMenu(
+          `🔌 Протокол: <b>${escapeHtml(PROTOCOL_LABELS[sel.protocol] || sel.protocol)}</b>\n` +
+          `📍 Страна: <b>${escapeHtml(country === 'all' ? 'Любая' : codeToName(country))}</b>\n\n` +
+          `Шаг 3 из 3 — выберите количество нод:`,
+          countKeyboard()
+        );
+        return bot.answerCallbackQuery(q.id);
+      }
+
+      if (data.startsWith('n:')) {
+        const count = parseInt(data.slice(2), 10) || 0;
+        const sel = sessions.get(chatId) || {};
+        sel.count = count;
+        sessions.set(chatId, sel);
+        await bot.answerCallbackQuery(q.id, { text: 'Генерирую ссылку и QR…' });
+        // Удаляем меню-сообщение, чтобы не мешалось, и отправляем результат отдельным фото.
+        try { await bot.deleteMessage(chatId, messageId); } catch {}
+        await sendResult(chatId, sel);
+        sessions.delete(chatId);
+        return;
+      }
+
+      return bot.answerCallbackQuery(q.id);
+    } catch (err) {
+      console.error('Bot callback error:', err.message);
+      try { await bot.answerCallbackQuery(q.id, { text: 'Ошибка, попробуйте /start' }); } catch {}
+    }
+  });
+
+  bot.on('polling_error', (err) => {
+    console.error('Telegram polling error:', err.code || err.message);
+  });
+
+  console.log('🤖 Telegram-бот запущен (long-polling).');
+  return bot;
+}
+
 // ==================== START ====================
 
 app.listen(PORT, () => {
@@ -740,4 +1032,15 @@ app.listen(PORT, () => {
   console.log(`🔄 Update every ${CONFIG.updateIntervalMinutes} minutes`);
   console.log(`📍 Endpoint: /sub/:protocol/:country/:count  (например /sub/vless/RU/10)`);
   console.log(`📍 Также: /status | /health`);
+
+  // ==================== TELEGRAM BOT ====================
+  // На Render публичный URL доступен в RENDER_EXTERNAL_URL — используем его,
+  // если BASE_URL не задан явно.
+  const baseUrl = CONFIG.baseUrl || process.env.RENDER_EXTERNAL_URL || '';
+  startBot({
+    token: CONFIG.botToken,
+    baseUrl,
+    countryNames,
+    getStats: computeStats   // бот читает статистику напрямую, в том же процессе
+  });
 });
