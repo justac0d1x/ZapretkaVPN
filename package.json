@@ -1,22 +1,24 @@
 {
-  "name": "vpn-aggregator",
-  "version": "2.1.0",
+  "name": "zapretka",
+  "version": "3.3.0",
+  "description": "Subscription aggregator with custom filtering endpoints and a built-in Telegram subscription-link builder bot (single-file)",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
+  "engines": {
+    "node": ">=18"
+  },
   "license": "ISC",
-  "description": "Zapretka - Advanced VPN Subscription Aggregator",
   "dependencies": {
-    "axios": "^1.7.2",
+    "axios": "^1.7.0",
     "base-64": "^1.0.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.0",
     "geoip-lite": "^1.4.10",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "node-telegram-bot-api": "^0.66.0",
+    "qrcode": "^1.5.4"
   }
 }
