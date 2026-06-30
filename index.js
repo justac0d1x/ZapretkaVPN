@@ -1,6 +1,7 @@
 import express from 'express';
 import axios from 'axios';
 import net from 'net';
+import tls from 'tls';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 import geoip from 'geoip-lite';
@@ -15,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 const CONFIG = {
   // === Основные настройки сервиса ===
   name: process.env.SERVICE_NAME || "Zapretka",
-  version: process.env.SERVICE_VERSION || "2.1.0",
+  version: process.env.SERVICE_VERSION || "2.2.0",
 
   // === Источники подписок ===
   subscriptionUrls: (process.env.SUBSCRIPTION_URLS || '')
@@ -275,43 +276,79 @@ async function testTCP(node, timeout = 5500) {
   });
 }
 
+// Проверка TLS-хендшейка к САМОМУ серверу ноды (а не к google.com).
+// Для reality/tls нод сервер должен ответить корректным TLS на нужном SNI.
+// latency считаем по времени до установления соединения (TCP+TLS).
+async function testTLS(node, timeout = 6000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch {}
+      resolve(result);
+    };
+
+    const socket = tls.connect({
+      host: node.server,
+      port: node.port,
+      servername: node.sni || node.host || node.server,
+      // Сертификат у reality/самоподписанных нод почти всегда «невалидный»
+      // с точки зрения CA — нам важен сам факт ответа TLS, а не доверие.
+      rejectUnauthorized: false,
+      ALPNProtocols: ['h2', 'http/1.1']
+    }, () => {
+      done({ success: true, latency: Date.now() - start });
+    });
+
+    socket.setTimeout(timeout);
+    socket.on('timeout', () => done({ success: false, latency: null }));
+    socket.on('error', () => done({ success: false, latency: null }));
+  });
+}
+
 async function testNode(node) {
   try {
+    // hysteria2 работает поверх QUIC/UDP — TCP/TLS-проба к нему неприменима.
+    // Не имея способа проверить UDP-датаграммы здесь, считаем такие ноды
+    // потенциально живыми (TCP-проба часто не сработает, а отбрасывать жалко).
     if (node.protocol === 'hysteria2') {
-      const urlOk = await testURLQuick(node);
       return {
         ...node,
-        latency: 50,
-        alive: urlOk,
+        latency: 100,
+        alive: true,
         testedAt: new Date()
       };
     }
 
+    // 1) Базовая TCP-проба — открыт ли порт.
     const tcp = await testTCP(node);
-    if (!tcp.success) return { ...node, latency: null, alive: false };
-    
-    const urlOk = await testURLQuick(node);
-    
+    if (!tcp.success) {
+      return { ...node, latency: null, alive: false };
+    }
+
+    // 2) Для tls/reality дополнительно проверяем TLS-хендшейк к самому серверу.
+    //    Это отсеет ноды, где порт открыт, но TLS не отвечает.
+    if (node.tls) {
+      const tlsRes = await testTLS(node);
+      return {
+        ...node,
+        latency: tlsRes.success ? tlsRes.latency : tcp.latency,
+        alive: tlsRes.success,
+        testedAt: new Date()
+      };
+    }
+
+    // 3) Нешифрованные ноды — достаточно открытого TCP-порта.
     return {
       ...node,
       latency: tcp.latency,
-      alive: tcp.success && urlOk,
+      alive: true,
       testedAt: new Date()
     };
   } catch {
     return { ...node, latency: null, alive: false };
-  }
-}
-
-async function testURLQuick(node) {
-  try {
-    const res = await axios.get('https://www.google.com', {
-      timeout: 7000,
-      validateStatus: () => true
-    });
-    return res.status < 500;
-  } catch {
-    return false;
   }
 }
 
