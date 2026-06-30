@@ -199,23 +199,37 @@ function parseHysteria2(link) {
 function parseSubscription(rawText) {
   let text = rawText.trim();
 
-  // Автоматическое декодирование base64 (многие подписки отдают base64)
-  if (!text.includes('vless://') && 
-      !text.includes('vmess://') && 
-      !text.includes('trojan://') && 
-      !text.includes('ss://')) {
-    
+  // Проверяем, есть ли протоколы в тексте
+  const hasProtocol = text.includes('vless://') || 
+                      text.includes('vmess://') || 
+                      text.includes('trojan://') || 
+                      text.includes('ss://') ||
+                      text.includes('hysteria2://');
+
+  // Если протоколов нет — всегда пробуем декодировать как base64
+  if (!hasProtocol) {
+    // Убираем все пробелы и переносы строк
+    const clean = text.replace(/[\s\r\n]/g, '');
+
     try {
-      // Пробуем декодировать как base64
-      const decoded = Buffer.from(text, 'base64').toString('utf8');
-      if (decoded.includes('vless://') || decoded.includes('vmess://')) {
-        console.log('📦 Обнаружен base64 — декодируем');
+      // Пробуем декодировать base64
+      const decoded = Buffer.from(clean, 'base64').toString('utf8');
+
+      // Если после декодирования появились протоколы — используем
+      if (decoded.includes('vless://') || 
+          decoded.includes('vmess://') || 
+          decoded.includes('trojan://') || 
+          decoded.includes('ss://')) {
+        
+        console.log('📦 Обнаружен base64 — успешно декодировано');
         text = decoded;
       } else {
-        console.log('⚠️ Ответ не похож на VPN-подписку');
+        // Показываем диагностику
+        console.log('⚠️ Не удалось распознать формат подписки');
+        console.log('Первые 500 символов:', text.substring(0, 500));
       }
     } catch (e) {
-      // Не base64 — оставляем как есть
+      console.log('⚠️ Ошибка декодирования base64');
     }
   }
 
