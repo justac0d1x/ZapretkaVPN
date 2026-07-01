@@ -1,4 +1,4 @@
-name: Check Xray nodes and update subscription
+name: Manual check
 
 on:
   workflow_dispatch:
