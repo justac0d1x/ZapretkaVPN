@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           SB_VERSION=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name')
           echo "Installing sing-box $SB_VERSION"
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/${SB_VERSION#v}/sing-box-${SB_VERSION#v}-linux-amd64.tar.gz" -o /tmp/sing-box.tar.gz
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/${SB_VERSION}/sing-box-${SB_VERSION#v}-linux-amd64.tar.gz" -o /tmp/sing-box.tar.gz
           tar -xzf /tmp/sing-box.tar.gz -C /tmp
           sudo install -m 755 /tmp/sing-box*/sing-box /usr/local/bin/sing-box
           sing-box version
