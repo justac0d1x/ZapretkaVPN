@@ -1,0 +1,85 @@
+name: Check Xray nodes and publish to Gist
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Change this cron for every N hours. This example runs every 6 hours, UTC.
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Xray Core
+        shell: bash
+        env:
+          XRAY_VERSION: ${{ vars.XRAY_VERSION }}
+        run: |
+          set -euo pipefail
+          if [ -z "${XRAY_VERSION:-}" ] || [ "${XRAY_VERSION:-}" = "latest" ]; then
+            URL=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+              | jq -r '.assets[] | select(.name | test("Xray-linux-64.zip$")) | .browser_download_url' | head -n 1)
+          else
+            URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          fi
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o /tmp/xray.zip
+          unzip -q /tmp/xray.zip -d /tmp/xray
+          sudo install -m 755 /tmp/xray/xray /usr/local/bin/xray
+          xray version
+
+      - name: Check nodes
+        env:
+          TEST_URL: ${{ vars.TEST_URL || 'https://www.gstatic.com/generate_204' }}
+          TIMEOUT_SECONDS: ${{ vars.TIMEOUT_SECONDS || '12' }}
+          REQUIRE_COUNTRY: ${{ vars.REQUIRE_COUNTRY || '' }}
+        run: |
+          python scripts/check_nodes.py \
+            --input nodes.txt \
+            --output output/working_nodes.txt \
+            --report output/report.md \
+            --test-url "$TEST_URL" \
+            --timeout "$TIMEOUT_SECONDS" \
+            --require-country "$REQUIRE_COUNTRY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-check-results
+          path: output/*
+
+      - name: Publish to Gist
+        if: ${{ secrets.GIST_TOKEN != '' && secrets.GIST_ID != '' }}
+        shell: bash
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --rawfile working output/working_nodes.txt \
+            --rawfile report output/report.md \
+            '{files:{"working_nodes.txt":{content:$working},"report.md":{content:$report}}}' \
+            > /tmp/gist-payload.json
+          curl -fsSL -X PATCH \
+            -H "Authorization: Bearer ${GIST_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/gists/${GIST_ID}" \
+            -d @/tmp/gist-payload.json
