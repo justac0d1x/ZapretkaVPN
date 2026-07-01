@@ -599,13 +599,15 @@ def fetch_subscription(
         "Pragma": "no-cache",
     }
     last_exc: Exception | None = None
-    retries = int(os.environ.get("SUBSCRIPTION_FETCH_RETRIES", "2"))
+    retries = int(os.environ.get("SUBSCRIPTION_FETCH_RETRIES", "4"))
+    base_delay = 1.5
+
     for attempt in range(retries + 1):
         try:
             response = requests.get(
                 url,
                 headers=headers,
-                timeout=max(timeout, 18),
+                timeout=max(timeout, 20),
                 allow_redirects=True,
                 proxies=proxies,
             )
@@ -622,9 +624,13 @@ def fetch_subscription(
             return body
         except Exception as exc:
             last_exc = exc
+            error_type = type(exc).__name__
             if attempt < retries:
-                time.sleep(1.2)
+                delay = base_delay * (attempt + 1)
+                print(f"  ↳ attempt {attempt+1}/{retries+1} failed ({error_type}), retrying in {delay:.1f}s...", flush=True)
+                time.sleep(delay)
                 continue
+            print(f"  ↳ all {retries+1} attempts failed: {error_type}", flush=True)
             raise last_exc
 
 
