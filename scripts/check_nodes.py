@@ -99,6 +99,9 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
     network = one(qs, "type", "net", default="tcp") or "tcp"
     security = one(qs, "security", "tls", default="none") or "none"
 
+    # Some clients/panels use `type=raw` for what Xray Core calls plain TCP transport.
+    if network == "raw":
+        network = "tcp"
     if network in {"h2", "http"}:
         network = "http"
     if security == "false":
