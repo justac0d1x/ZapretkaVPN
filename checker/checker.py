@@ -503,7 +503,7 @@ def check_node(index: int, uri: str, test_url: str, timeout: float, require_coun
 
     # Hysteria2 via sing-box
     if scheme in HYSTERIA2_SCHEMES:
-        return check_hysteria2_node(index, uri, test_url, timeout, require_country)
+        return check_hysteria2_node(index, uri, test_url, timeout)
 
     # Everything else via Xray
     try:
@@ -645,6 +645,8 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes: list[str] = []
 
     nodes.extend(load_nodes(path))
+    # SERVER_VLESS_URI intentionally disabled (user request)
+    # nodes.extend(extract_proxy_links("\n".join(env_lines("SERVER_VLESS_URI"))))
     nodes.extend(extract_proxy_links("\n".join(env_lines("NODE_URIS"))))
 
     proxy_uri = os.environ.get("PROXY_URI", "").strip()
@@ -718,7 +720,7 @@ def main(argv: list[str]) -> int:
     print(f"Loaded {len(nodes)} unique node(s) from file, secrets, and subscriptions")
     print(f"Checking with concurrency={args.concurrency}...")
 
-    results: list[NodeResult] = [None] * len(nodes)
+    results: list[NodeResult] = [None] * len(nodes)  # type: ignore
 
     def worker(idx: int, uri: str):
         res = check_node(idx + 1, uri, args.test_url, args.timeout, args.require_country)
