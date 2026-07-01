@@ -1,9 +1,8 @@
-name: Check Xray nodes and publish to Gist
+name: Check Xray nodes and update subscription
 
 on:
   workflow_dispatch:
   schedule:
-    # Change this cron for every N hours. This example runs every 6 hours, UTC.
     - cron: '0 */6 * * *'
 
 permissions:
@@ -12,7 +11,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -24,7 +23,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r checker/requirements.txt
 
       - name: Install Xray Core
         shell: bash
@@ -44,6 +43,17 @@ jobs:
           sudo install -m 755 /tmp/xray/xray /usr/local/bin/xray
           xray version
 
+      - name: Install sing-box (for Hysteria2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SB_VERSION=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name')
+          echo "Installing sing-box $SB_VERSION"
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/${SB_VERSION#v}/sing-box-${SB_VERSION#v}-linux-amd64.tar.gz" -o /tmp/sing-box.tar.gz
+          tar -xzf /tmp/sing-box.tar.gz -C /tmp
+          sudo install -m 755 /tmp/sing-box*/sing-box /usr/local/bin/sing-box
+          sing-box version
+
       - name: Check nodes
         env:
           TEST_URL: ${{ vars.TEST_URL || 'https://www.gstatic.com/generate_204' }}
@@ -56,9 +66,9 @@ jobs:
           SUBSCRIPTION_URLS: ${{ secrets.SUBSCRIPTION_URLS }}
           SUBSCRIPTION_PROXY_URI: ${{ secrets.SUBSCRIPTION_PROXY_URI }}
         run: |
-          python scripts/check_nodes.py \
+          python checker/checker.py \
             --input nodes.txt \
-            --output output/working_nodes.txt \
+            --output output/sub.txt \
             --report output/report.md \
             --test-url "$TEST_URL" \
             --timeout "$TIMEOUT_SECONDS" \
@@ -70,39 +80,6 @@ jobs:
           name: node-check-results
           path: output/*
 
-      - name: Publish to Gist
-        shell: bash
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: ${{ secrets.GIST_ID }}
-        run: |
-          set -euo pipefail
-          jq -n \
-            --rawfile working output/working_nodes.txt \
-            --rawfile report output/report.md \
-            '{files:{"working_nodes.txt":{content:$working},"report.md":{content:$report}}}' \
-            > /tmp/gist-payload.json
-
-          RESPONSE=$(curl -sS -X PATCH \
-            -H "Authorization: Bearer ${GIST_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/gists/${GIST_ID}" \
-            -d @/tmp/gist-payload.json)
-
-          echo "Gist update response:"
-          # Исправлено: игнорируем broken pipe при head
-          printf '%s' "$RESPONSE" | head -c 600 || true
-          echo
-
-          if echo "$RESPONSE" | grep -q '"message"'; then
-            echo "⚠️ Possible error in Gist update"
-            echo "$RESPONSE"
-            exit 1
-          fi
-
-          echo "✅ Gist updated successfully"
-
       - name: Commit and push output files
         shell: bash
         run: |
@@ -112,6 +89,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update node check results $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git commit -m "Update subscription $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             git push
           fi
