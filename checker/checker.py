@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
@@ -716,19 +717,32 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--test-url", default="https://www.gstatic.com/generate_204")
     parser.add_argument("--timeout", type=float, default=12.0)
     parser.add_argument("--require-country", default=os.environ.get("REQUIRE_COUNTRY", "").strip() or None)
+    parser.add_argument("--concurrency", type=int, default=10, help="How many nodes to check in parallel")
     args = parser.parse_args(argv)
 
     nodes = load_all_nodes(Path(args.input), args.timeout)
     print(f"Loaded {len(nodes)} unique node(s) from file, secrets, and subscriptions")
-    results: list[NodeResult] = []
-    for idx, uri in enumerate(nodes, 1):
-        print(f"[{idx}/{len(nodes)}] checking {node_name(uri, f'node-{idx}')} ...", flush=True)
-        res = check_node(idx, uri, args.test_url, args.timeout, args.require_country)
-        results.append(res)
+    print(f"Checking with concurrency={args.concurrency}...")
+
+    results: list[NodeResult] = [None] * len(nodes)  # type: ignore
+
+    def worker(idx: int, uri: str):
+        res = check_node(idx + 1, uri, args.test_url, args.timeout, args.require_country)
         if res.ok:
-            print(f"  OK {res.latency_ms} ms status={res.status_code} country={res.country or '-'}")
+            print(f"[{idx+1}/{len(nodes)}] {node_name(uri, f'node-{idx+1}')} → OK {res.latency_ms}ms", flush=True)
         else:
-            print(f"  FAIL {res.error}")
+            print(f"[{idx+1}/{len(nodes)}] {node_name(uri, f'node-{idx+1}')} → FAIL {res.error}", flush=True)
+        return idx, res
+
+    with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+        future_to_idx = {
+            executor.submit(worker, idx, uri): idx
+            for idx, uri in enumerate(nodes)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx, res = future.result()
+            results[idx] = res
 
     write_outputs(results, Path(args.output), Path(args.report))
     print(f"Working: {sum(1 for r in results if r.ok)}/{len(results)}")
