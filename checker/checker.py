@@ -82,10 +82,24 @@ def split_csv(value: str | None) -> list[str] | None:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+import re
+
+# Match country flag emojis (two Regional Indicator Symbols)
+EMOJI_FLAG_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+
+def extract_first_country_emoji(text: str) -> str:
+    """Returns the first country flag emoji found, or 🌐 if none."""
+    matches = EMOJI_FLAG_RE.findall(text)
+    return matches[0] if matches else "🌐"
+
 def node_name(uri: str, fallback: str) -> str:
     try:
         frag = urlsplit(uri).fragment
-        return unquote(frag) if frag else fallback
+        if frag:
+            original_name = unquote(frag)
+            emoji = extract_first_country_emoji(original_name)
+            return f"{emoji} Zapretka"
+        return fallback
     except Exception:
         return fallback
 
