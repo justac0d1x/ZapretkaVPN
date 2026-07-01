@@ -82,18 +82,26 @@ jobs:
             --rawfile report output/report.md \
             '{files:{"working_nodes.txt":{content:$working},"report.md":{content:$report}}}' \
             > /tmp/gist-payload.json
+
           RESPONSE=$(curl -sS -X PATCH \
             -H "Authorization: Bearer ${GIST_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/gists/${GIST_ID}" \
             -d @/tmp/gist-payload.json)
+
           echo "Gist update response:"
-          echo "$RESPONSE" | head -c 500
+          # Исправлено: игнорируем broken pipe при head
+          printf '%s' "$RESPONSE" | head -c 600 || true
+          echo
+
           if echo "$RESPONSE" | grep -q '"message"'; then
-            echo "Possible error in Gist update"
+            echo "⚠️ Possible error in Gist update"
             echo "$RESPONSE"
+            exit 1
           fi
+
+          echo "✅ Gist updated successfully"
 
       - name: Commit and push output files
         shell: bash
