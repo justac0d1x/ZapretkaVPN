@@ -69,7 +69,6 @@ jobs:
           path: output/*
 
       - name: Publish to Gist
-        if: ${{ secrets.GIST_TOKEN != '' && secrets.GIST_ID != '' }}
         shell: bash
         env:
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
