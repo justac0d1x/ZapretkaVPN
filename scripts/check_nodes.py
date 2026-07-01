@@ -18,6 +18,7 @@ import base64
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -34,6 +35,10 @@ import requests
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "shadowsocks"}
 UNSUPPORTED_SCHEMES = {"hysteria2", "hy2", "hysteria", "tuic", "wireguard"}
+ALL_KNOWN_SCHEMES = SUPPORTED_SCHEMES | UNSUPPORTED_SCHEMES | {"hy2"}
+PROXY_LINK_RE = re.compile(
+    r"(?i)\\b(?:" + "|".join(re.escape(s) for s in sorted(ALL_KNOWN_SCHEMES)) + r")://[^\\s'\"<>]+"
+)
 
 
 @dataclass
@@ -419,14 +424,101 @@ def check_node(index: int, uri: str, test_url: str, timeout: float, require_coun
         return NodeResult(index, name, uri, scheme, False, error=str(exc))
 
 
+def normalize_candidate_link(value: str) -> str | None:
+    value = value.strip().strip("'\",[]{}")
+    if not value or value.startswith("#"):
+        return None
+    scheme = urlsplit(value).scheme.lower()
+    if scheme in ALL_KNOWN_SCHEMES:
+        return value
+    return None
+
+
+def extract_proxy_links(text: str) -> list[str]:
+    """Extract proxy links from plain text, base64 subscription text, or YAML-ish text."""
+    candidates: list[str] = []
+
+    def add_from(raw: str) -> None:
+        for line in raw.splitlines():
+            link = normalize_candidate_link(line)
+            if link:
+                candidates.append(link)
+        for match in PROXY_LINK_RE.findall(raw):
+            link = normalize_candidate_link(match)
+            if link:
+                candidates.append(link)
+
+    add_from(text)
+
+    compact = "".join(text.split())
+    if compact:
+        with contextlib.suppress(Exception):
+            decoded = b64decode_padded(compact).decode("utf-8", errors="ignore")
+            if decoded and decoded != text:
+                add_from(decoded)
+
+    return dedupe(candidates)
+
+
+def dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
 def load_nodes(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return extract_proxy_links(path.read_text(encoding="utf-8"))
+
+
+def env_lines(name: str) -> list[str]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return []
+    return [line.strip() for line in value.splitlines() if line.strip() and not line.strip().startswith("#")]
+
+
+def fetch_subscription(url: str, user_agent: str, timeout: float) -> str:
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/plain, application/octet-stream, */*",
+    }
+    response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    response.raise_for_status()
+    return response.text
+
+
+def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        nodes.append(line)
-    return nodes
+
+    # Public/non-secret file in repo.
+    nodes.extend(load_nodes(path))
+
+    # Secrets can contain one or many full proxy URIs, one per line.
+    nodes.extend(extract_proxy_links("\n".join(env_lines("SERVER_VLESS_URI"))))
+    nodes.extend(extract_proxy_links("\n".join(env_lines("NODE_URIS"))))
+
+    # Secret with subscription URLs only, one URL per line. Content is fetched with Hiddify UA by default.
+    subscription_urls = env_lines("SUBSCRIPTION_URLS")
+    user_agent = os.environ.get("SUBSCRIPTION_USER_AGENT", "Hiddify").strip() or "Hiddify"
+    for sub_url in subscription_urls:
+        try:
+            host = urlsplit(sub_url).hostname or "subscription"
+            print(f"Fetching subscription from {host} with User-Agent: {user_agent}", flush=True)
+            content = fetch_subscription(sub_url, user_agent, timeout)
+            extracted = extract_proxy_links(content)
+            print(f"  extracted {len(extracted)} link(s)", flush=True)
+            nodes.extend(extracted)
+        except Exception as exc:
+            host = urlsplit(sub_url).hostname or "subscription"
+            print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
+
+    return dedupe(nodes)
 
 
 def write_outputs(results: list[NodeResult], output: Path, report: Path) -> None:
@@ -465,8 +557,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--require-country", default=os.environ.get("REQUIRE_COUNTRY", "").strip() or None)
     args = parser.parse_args(argv)
 
-    nodes = load_nodes(Path(args.input))
-    print(f"Loaded {len(nodes)} node(s)")
+    nodes = load_all_nodes(Path(args.input), args.timeout)
+    print(f"Loaded {len(nodes)} unique node(s) from file, secrets, and subscriptions")
     results: list[NodeResult] = []
     for idx, uri in enumerate(nodes, 1):
         print(f"[{idx}/{len(nodes)}] checking {node_name(uri, f'node-{idx}')} ...", flush=True)
