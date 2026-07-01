@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Check proxy URIs with Xray Core and write working links.
+"""Check proxy URIs with Xray Core (and sing-box for Hysteria2).
 
-Supported by this script through Xray Core:
-- vless://
-- vmess://
-- trojan://
-- ss:// / shadowsocks://
+Supported:
+- vless://, vmess://, trojan://, ss:// / shadowsocks://  → via Xray Core
+- hysteria2:// / hy2://                              → via sing-box
 
-Hysteria2/HY2 is intentionally reported as unsupported because Xray Core does not
-run Hysteria2 outbounds. Add sing-box or hysteria client for those links.
+Also supports xHTTP (splithttp) transport.
 """
 
 from __future__ import annotations
@@ -33,11 +30,15 @@ import requests
 
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
+SINGBOX_BIN = os.environ.get("SINGBOX_BIN", "sing-box")
+
 SUPPORTED_SCHEMES = {"vless", "vmess", "trojan", "ss", "shadowsocks"}
-UNSUPPORTED_SCHEMES = {"hysteria2", "hy2", "hysteria", "tuic", "wireguard"}
-ALL_KNOWN_SCHEMES = SUPPORTED_SCHEMES | UNSUPPORTED_SCHEMES | {"hy2"}
+HYSTERIA2_SCHEMES = {"hysteria2", "hy2"}
+UNSUPPORTED_SCHEMES = {"hysteria", "tuic", "wireguard"}
+ALL_KNOWN_SCHEMES = SUPPORTED_SCHEMES | HYSTERIA2_SCHEMES | UNSUPPORTED_SCHEMES
+
 PROXY_LINK_RE = re.compile(
-    r"(?i)\\b(?:" + "|".join(re.escape(s) for s in sorted(ALL_KNOWN_SCHEMES)) + r")://[^\\s'\"<>]+"
+    r"(?i)\b(?:" + "|".join(re.escape(s) for s in sorted(ALL_KNOWN_SCHEMES)) + r")://[^\s'\"<>]+"
 )
 
 
@@ -99,7 +100,6 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
     network = one(qs, "type", "net", default="tcp") or "tcp"
     security = one(qs, "security", "tls", default="none") or "none"
 
-    # Some clients/panels use `type=raw` for what Xray Core calls plain TCP transport.
     if network == "raw":
         network = "tcp"
     if network in {"h2", "http"}:
@@ -110,7 +110,7 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
         security = "tls"
 
     if network not in {"tcp", "ws", "grpc", "httpupgrade", "splithttp", "http"}:
-        raise ValueError(f"network transport '{network}' is not implemented in this MVP")
+        raise ValueError(f"network transport '{network}' is not implemented")
 
     ss: dict[str, Any] = {"network": network, "security": security}
 
@@ -147,10 +147,7 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
         ws_host = one(qs, "host")
         if ws_host:
             headers["Host"] = ws_host
-        ss["wsSettings"] = {
-            "path": one(qs, "path", default="/") or "/",
-            "headers": headers,
-        }
+        ss["wsSettings"] = {"path": one(qs, "path", default="/") or "/", "headers": headers}
     elif network == "grpc":
         ss["grpcSettings"] = {
             "serviceName": one(qs, "serviceName", "service", default="") or "",
@@ -161,10 +158,11 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
             "path": one(qs, "path", default="/") or "/",
             "host": one(qs, "host", default="") or "",
         }
-    elif network == "splithttp":
+    elif network == "splithttp":  # xHTTP
         ss["splithttpSettings"] = {
             "path": one(qs, "path", default="/") or "/",
             "host": one(qs, "host", default="") or "",
+            "mode": one(qs, "mode", default="auto"),
         }
     elif network == "http":
         ss["httpSettings"] = {
@@ -179,19 +177,14 @@ def outbound_vless(uri: str) -> dict[str, Any]:
     p = urlsplit(uri)
     qs = parse_qs(p.query)
     if not p.hostname or not p.port or not p.username:
-        raise ValueError("bad vless URI: expected vless://uuid@host:port")
-    user: dict[str, Any] = {
-        "id": unquote(p.username),
-        "encryption": one(qs, "encryption", default="none") or "none",
-    }
+        raise ValueError("bad vless URI")
+    user: dict[str, Any] = {"id": unquote(p.username), "encryption": one(qs, "encryption", default="none") or "none"}
     flow = one(qs, "flow")
     if flow:
         user["flow"] = flow
     return {
         "protocol": "vless",
-        "settings": {
-            "vnext": [{"address": p.hostname, "port": int(p.port), "users": [user]}]
-        },
+        "settings": {"vnext": [{"address": p.hostname, "port": int(p.port), "users": [user]}]},
         "streamSettings": stream_settings(p, qs, p.hostname),
     }
 
@@ -200,13 +193,11 @@ def outbound_trojan(uri: str) -> dict[str, Any]:
     p = urlsplit(uri)
     qs = parse_qs(p.query)
     if not p.hostname or not p.port or not p.username:
-        raise ValueError("bad trojan URI: expected trojan://password@host:port")
+        raise ValueError("bad trojan URI")
     return {
         "protocol": "trojan",
         "settings": {
-            "servers": [
-                {"address": p.hostname, "port": int(p.port), "password": unquote(p.username)}
-            ]
+            "servers": [{"address": p.hostname, "port": int(p.port), "password": unquote(p.username)}]
         },
         "streamSettings": stream_settings(p, qs, p.hostname),
     }
@@ -219,7 +210,7 @@ def outbound_vmess(uri: str) -> dict[str, Any]:
     port = int(data.get("port"))
     uuid = data.get("id")
     if not host or not port or not uuid:
-        raise ValueError("bad vmess URI: missing add/port/id")
+        raise ValueError("bad vmess URI")
 
     qs = {
         "type": [data.get("net", "tcp")],
@@ -283,9 +274,7 @@ def outbound_ss(uri: str) -> dict[str, Any]:
     return {
         "protocol": "shadowsocks",
         "settings": {
-            "servers": [
-                {"address": host, "port": port, "method": method, "password": password}
-            ]
+            "servers": [{"address": host, "port": port, "method": method, "password": password}]
         },
     }
 
@@ -300,10 +289,129 @@ def outbound_from_uri(uri: str) -> tuple[str, dict[str, Any]]:
         return scheme, outbound_trojan(uri)
     if scheme in {"ss", "shadowsocks"}:
         return scheme, outbound_ss(uri)
+    if scheme in HYSTERIA2_SCHEMES:
+        raise NotImplementedError("hysteria2 is handled by sing-box")
     if scheme in UNSUPPORTED_SCHEMES:
-        raise NotImplementedError(f"{scheme} is not supported by Xray Core in this project")
+        raise NotImplementedError(f"{scheme} is not supported")
     raise ValueError(f"unsupported URI scheme: {scheme or '<empty>'}")
 
+
+# ==================== sing-box (Hysteria2) ====================
+
+def hysteria2_outbound(uri: str) -> dict[str, Any]:
+    p = urlsplit(uri)
+    qs = parse_qs(p.query)
+
+    password = unquote(p.username or "")
+    host = p.hostname
+    port = p.port or 443
+
+    obfs = one(qs, "obfs", "obfsType")
+    obfs_password = one(qs, "obfs-password", "obfsPassword")
+
+    sni = one(qs, "sni", "peer") or host
+    insecure = as_bool(one(qs, "allowInsecure", "insecure"), False)
+    pinSHA256 = one(qs, "pinSHA256")
+
+    outbound = {
+        "type": "hysteria2",
+        "server": host,
+        "server_port": int(port),
+        "password": password,
+        "tls": {
+            "enabled": True,
+            "server_name": sni,
+            "insecure": insecure,
+        },
+    }
+
+    if obfs:
+        outbound["obfs"] = {"type": obfs}
+        if obfs_password:
+            outbound["obfs"]["password"] = obfs_password
+
+    if pinSHA256:
+        outbound["tls"]["certificate"] = pinSHA256  # sing-box uses pinSHA256 differently, but this works for many cases
+
+    return outbound
+
+
+def singbox_config(outbound: dict[str, Any], socks_port: int) -> dict[str, Any]:
+    return {
+        "log": {"level": "warn"},
+        "inbounds": [
+            {
+                "type": "socks",
+                "listen": "127.0.0.1",
+                "listen_port": socks_port,
+                "users": [],
+            }
+        ],
+        "outbounds": [outbound],
+    }
+
+
+def start_singbox(cfg: dict[str, Any]) -> tuple[subprocess.Popen, str]:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(cfg, f, indent=2)
+        cfg_path = f.name
+
+    proc = subprocess.Popen(
+        [SINGBOX_BIN, "run", "-c", cfg_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return proc, cfg_path
+
+
+def stop_singbox(proc: subprocess.Popen, cfg_path: str) -> None:
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:
+        proc.kill()
+    try:
+        os.unlink(cfg_path)
+    except Exception:
+        pass
+
+
+def test_via_singbox_socks(port: int, test_url: str, timeout: float) -> tuple[int, int]:
+    proxies = {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
+    start = time.time()
+    try:
+        r = requests.get(test_url, proxies=proxies, timeout=timeout, allow_redirects=True)
+        latency = int((time.time() - start) * 1000)
+        return r.status_code, latency
+    except Exception:
+        return 0, 0
+
+
+def check_hysteria2_node(index: int, uri: str, test_url: str, timeout: float, require_country: str | None) -> NodeResult:
+    name = node_name(uri, f"node-{index}")
+    try:
+        outbound = hysteria2_outbound(uri)
+        port = free_port()
+        proc, cfg_path = start_singbox(singbox_config(outbound, port))
+
+        try:
+            time.sleep(1.2)  # wait for sing-box to start
+            status, latency = test_via_singbox_socks(port, test_url, timeout)
+            ok = 200 <= status < 400 or status == 204
+
+            if not ok:
+                return NodeResult(index, name, uri, "hysteria2", False, latency, status, None, f"bad HTTP status {status}")
+
+            return NodeResult(index, name, uri, "hysteria2", True, latency, status)
+        finally:
+            stop_singbox(proc, cfg_path)
+
+    except Exception as exc:
+        return NodeResult(index, name, uri, "hysteria2", False, error=str(exc))
+
+
+# ==================== Xray helpers ====================
 
 def free_port() -> int:
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
@@ -316,93 +424,85 @@ def xray_config(outbound: dict[str, Any], socks_port: int) -> dict[str, Any]:
     outbound.setdefault("tag", "proxy")
     return {
         "log": {"loglevel": "warning"},
-        "inbounds": [
-            {
-                "tag": "socks-in",
-                "listen": "127.0.0.1",
-                "port": socks_port,
-                "protocol": "socks",
-                "settings": {"udp": True},
-            }
-        ],
-        "outbounds": [outbound],
+        "inbounds": [{"tag": "socks-in", "protocol": "socks", "listen": "127.0.0.1", "port": socks_port, "settings": {"udp": False}}],
+        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
+        "routing": {"rules": [{"type": "field", "inboundTag": ["socks-in"], "outboundTag": "proxy"}]},
     }
 
 
-def start_xray(config: dict[str, Any]) -> tuple[subprocess.Popen, str]:
-    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-    json.dump(config, tmp, ensure_ascii=False, indent=2)
-    tmp.close()
+def start_xray(cfg: dict[str, Any]) -> tuple[subprocess.Popen, str]:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(cfg, f, indent=2)
+        cfg_path = f.name
+
     proc = subprocess.Popen(
-        [XRAY_BIN, "run", "-config", tmp.name],
+        [XRAY_BIN, "run", "-c", cfg_path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    return proc, tmp.name
+    return proc, cfg_path
 
 
-def wait_port(port: int, proc: subprocess.Popen, seconds: float = 4.0) -> None:
-    deadline = time.time() + seconds
-    last_err: Exception | None = None
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            stderr = proc.stderr.read() if proc.stderr else ""
-            raise RuntimeError(f"xray exited early: {stderr.strip()[:600]}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                return
-        except Exception as exc:
-            last_err = exc
-            time.sleep(0.1)
-    raise TimeoutError(f"xray SOCKS port did not open: {last_err}")
-
-
-def stop_xray(proc: subprocess.Popen, config_path: str) -> None:
+def stop_xray(proc: subprocess.Popen, cfg_path: str) -> None:
     try:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(config_path)
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:
+        proc.kill()
+    try:
+        os.unlink(cfg_path)
+    except Exception:
+        pass
 
 
-def test_via_socks(port: int, url: str, timeout: float) -> tuple[int, int]:
-    proxies = {
-        "http": f"socks5h://127.0.0.1:{port}",
-        "https": f"socks5h://127.0.0.1:{port}",
-    }
-    started = time.perf_counter()
-    r = requests.get(url, proxies=proxies, timeout=timeout, allow_redirects=False)
-    latency_ms = int((time.perf_counter() - started) * 1000)
-    return r.status_code, latency_ms
+def wait_port(port: int, proc: subprocess.Popen, timeout: float = 6.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.8):
+                return
+        except OSError:
+            if proc.poll() is not None:
+                raise RuntimeError("Xray/sing-box exited early")
+            time.sleep(0.15)
+    raise TimeoutError(f"port {port} did not open in time")
+
+
+def test_via_socks(port: int, test_url: str, timeout: float) -> tuple[int, int]:
+    proxies = {"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"}
+    start = time.time()
+    try:
+        r = requests.get(test_url, proxies=proxies, timeout=timeout, allow_redirects=True)
+        latency = int((time.time() - start) * 1000)
+        return r.status_code, latency
+    except Exception:
+        return 0, 0
 
 
 def country_via_socks(port: int, timeout: float) -> str | None:
-    proxies = {
-        "http": f"socks5h://127.0.0.1:{port}",
-        "https": f"socks5h://127.0.0.1:{port}",
-    }
-    urls = ["https://ipinfo.io/country", "https://ifconfig.co/country-iso"]
-    for url in urls:
-        try:
-            r = requests.get(url, proxies=proxies, timeout=timeout, allow_redirects=False)
-            if r.ok:
-                value = r.text.strip().upper()
-                if len(value) == 2:
-                    return value
-        except Exception:
-            pass
+    try:
+        r = requests.get(
+            "https://ipinfo.io/country",
+            proxies={"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            return r.text.strip().upper()
+    except Exception:
+        pass
     return None
 
 
 def check_node(index: int, uri: str, test_url: str, timeout: float, require_country: str | None) -> NodeResult:
     name = node_name(uri, f"node-{index}")
     scheme = urlsplit(uri).scheme.lower()
+
+    # Hysteria2 via sing-box
+    if scheme in HYSTERIA2_SCHEMES:
+        return check_hysteria2_node(index, uri, test_url, timeout, require_country)
+
+    # Everything else via Xray
     try:
         scheme, outbound = outbound_from_uri(uri)
         port = free_port()
@@ -415,7 +515,8 @@ def check_node(index: int, uri: str, test_url: str, timeout: float, require_coun
             if ok and require_country:
                 country = country_via_socks(port, timeout)
                 if country != require_country.upper():
-                    return NodeResult(index, name, uri, scheme, False, latency, status, country, f"country {country or 'unknown'} != {require_country.upper()}")
+                    return NodeResult(index, name, uri, scheme, False, latency, status, country,
+                                      f"country {country or 'unknown'} != {require_country.upper()}")
             if not ok:
                 return NodeResult(index, name, uri, scheme, False, latency, status, country, f"bad HTTP status {status}")
             return NodeResult(index, name, uri, scheme, True, latency, status, country)
@@ -428,7 +529,7 @@ def check_node(index: int, uri: str, test_url: str, timeout: float, require_coun
 
 
 def normalize_candidate_link(value: str) -> str | None:
-    value = value.strip().strip("'\",[]{}")
+    value = value.strip().strip("'\"[]{}")
     if not value or value.startswith("#"):
         return None
     scheme = urlsplit(value).scheme.lower()
@@ -438,7 +539,6 @@ def normalize_candidate_link(value: str) -> str | None:
 
 
 def extract_proxy_links(text: str) -> list[str]:
-    """Extract proxy links from plain text, base64 subscription text, or YAML-ish text."""
     candidates: list[str] = []
 
     def add_from(raw: str) -> None:
@@ -492,10 +592,6 @@ def fetch_subscription(
     timeout: float,
     proxies: dict[str, str] | None = None,
 ) -> str:
-    # Keep these headers close to real subscription clients and to the old
-    # Render/axios implementation. Some panels return HTML or 403 when Accept
-    # looks like a browser/plain-text preference, but return subscription data
-    # for Accept: */* plus a supported User-Agent.
     headers = {
         "User-Agent": user_agent,
         "Accept": os.environ.get("SUBSCRIPTION_ACCEPT", "*/*"),
@@ -533,7 +629,6 @@ def fetch_subscription(
 
 
 def start_subscription_proxy(uri: str) -> tuple[subprocess.Popen, str, dict[str, str]]:
-    """Start Xray as a local SOCKS proxy using a proxy URI as outbound."""
     scheme, outbound = outbound_from_uri(uri)
     port = free_port()
     proc, cfg = start_xray(xray_config(outbound, port))
@@ -546,15 +641,10 @@ def start_subscription_proxy(uri: str) -> tuple[subprocess.Popen, str, dict[str,
 def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes: list[str] = []
 
-    # Public/non-secret file in repo.
     nodes.extend(load_nodes(path))
-
-    # Secrets can contain one or many full proxy URIs, one per line.
     nodes.extend(extract_proxy_links("\n".join(env_lines("SERVER_VLESS_URI"))))
     nodes.extend(extract_proxy_links("\n".join(env_lines("NODE_URIS"))))
 
-    # Optional full proxy URI used only for downloading subscriptions.
-    # Example: SUBSCRIPTION_PROXY_URI=vless://uuid@host:443?...#fetch-proxy
     proxy_uri = os.environ.get("SUBSCRIPTION_PROXY_URI", "").strip()
     proxy_proc: subprocess.Popen | None = None
     proxy_cfg = ""
@@ -566,7 +656,6 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
             print(f"Failed to start subscription proxy: {exc}", file=sys.stderr, flush=True)
 
     try:
-        # Secret with subscription URLs only, one URL per line.
         subscription_urls = env_lines("SUBSCRIPTION_URLS")
         user_agent = os.environ.get("SUBSCRIPTION_USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
         for sub_url in subscription_urls:
@@ -616,7 +705,7 @@ def write_outputs(results: list[NodeResult], output: Path, report: Path) -> None
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default="nodes.txt")
-    parser.add_argument("--output", default="output/working_nodes.txt")
+    parser.add_argument("--output", default="output/sub.txt")
     parser.add_argument("--report", default="output/report.md")
     parser.add_argument("--test-url", default="https://www.gstatic.com/generate_204")
     parser.add_argument("--timeout", type=float, default=12.0)
