@@ -52,7 +52,6 @@ class NodeResult:
     ok: bool
     latency_ms: int | None = None
     status_code: int | None = None
-    country: str | None = None
     error: str | None = None
 
 
@@ -405,7 +404,7 @@ def test_via_singbox_socks(port: int, test_url: str, timeout: float) -> tuple[in
         return 0, 0
 
 
-def check_hysteria2_node(index: int, uri: str, test_url: str, timeout: float, require_country: str | None) -> NodeResult:
+def check_hysteria2_node(index: int, uri: str, test_url: str, timeout: float) -> NodeResult:
     name = node_name(uri, f"node-{index}")
     try:
         outbound = hysteria2_outbound(uri)
@@ -418,7 +417,7 @@ def check_hysteria2_node(index: int, uri: str, test_url: str, timeout: float, re
             ok = 200 <= status < 400 or status == 204
 
             if not ok:
-                return NodeResult(index, name, uri, "hysteria2", False, latency, status, None, f"bad HTTP status {status}")
+                return NodeResult(index, name, uri, "hysteria2", False, latency, status, f"bad HTTP status {status}")
 
             return NodeResult(index, name, uri, "hysteria2", True, latency, status)
         finally:
@@ -497,19 +496,6 @@ def test_via_socks(port: int, test_url: str, timeout: float) -> tuple[int, int]:
         return 0, 0
 
 
-def country_via_socks(port: int, timeout: float) -> str | None:
-    try:
-        r = requests.get(
-            "https://ipinfo.io/country",
-            proxies={"http": f"socks5h://127.0.0.1:{port}", "https": f"socks5h://127.0.0.1:{port}"},
-            timeout=timeout,
-        )
-        if r.status_code == 200:
-            return r.text.strip().upper()
-    except Exception:
-        pass
-    return None
-
 
 def check_node(index: int, uri: str, test_url: str, timeout: float, require_country: str | None) -> NodeResult:
     name = node_name(uri, f"node-{index}")
@@ -528,15 +514,9 @@ def check_node(index: int, uri: str, test_url: str, timeout: float, require_coun
             wait_port(port, proc)
             status, latency = test_via_socks(port, test_url, timeout)
             ok = 200 <= status < 400 or status == 204
-            country = None
-            if ok and require_country:
-                country = country_via_socks(port, timeout)
-                if country != require_country.upper():
-                    return NodeResult(index, name, uri, scheme, False, latency, status, country,
-                                      f"country {country or 'unknown'} != {require_country.upper()}")
             if not ok:
-                return NodeResult(index, name, uri, scheme, False, latency, status, country, f"bad HTTP status {status}")
-            return NodeResult(index, name, uri, scheme, True, latency, status, country)
+                return NodeResult(index, name, uri, scheme, False, latency, status, f"bad HTTP status {status}")
+            return NodeResult(index, name, uri, scheme, True, latency, status)
         finally:
             stop_xray(proc, cfg)
     except NotImplementedError as exc:
@@ -665,10 +645,9 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes: list[str] = []
 
     nodes.extend(load_nodes(path))
-    nodes.extend(extract_proxy_links("\n".join(env_lines("SERVER_VLESS_URI"))))
     nodes.extend(extract_proxy_links("\n".join(env_lines("NODE_URIS"))))
 
-    proxy_uri = os.environ.get("SUBSCRIPTION_PROXY_URI", "").strip()
+    proxy_uri = os.environ.get("PROXY_URI", "").strip()
     proxy_proc: subprocess.Popen | None = None
     proxy_cfg = ""
     fetch_proxies: dict[str, str] | None = None
@@ -679,8 +658,8 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
             print(f"Failed to start subscription proxy: {exc}", file=sys.stderr, flush=True)
 
     try:
-        subscription_urls = env_lines("SUBSCRIPTION_URLS")
-        user_agent = os.environ.get("SUBSCRIPTION_USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
+        subscription_urls = env_lines("NODE_URLS")
+        user_agent = os.environ.get("USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
         for sub_url in subscription_urls:
             try:
                 host = urlsplit(sub_url).hostname or "subscription"
@@ -711,17 +690,16 @@ def write_outputs(results: list[NodeResult], output: Path, report: Path) -> None
         f"Total: {len(results)}",
         f"Working: {len(working)}",
         "",
-        "| # | Status | Scheme | Name | Latency | HTTP | Country | Error |",
-        "|---:|:---:|---|---|---:|---:|:---:|---|",
+        "| # | Status | Scheme | Name | Latency | HTTP | Error |",
+        "|---:|:---:|---|---|---:|---:|:---:|",
     ]
     for r in results:
         status = "✅" if r.ok else "❌"
         latency = str(r.latency_ms) + " ms" if r.latency_ms is not None else ""
         http = str(r.status_code) if r.status_code is not None else ""
-        country = r.country or ""
         err = (r.error or "").replace("|", "\\|").replace("\n", " ")
         name = r.name.replace("|", "\\|")
-        lines.append(f"| {r.index} | {status} | `{r.scheme}` | {name} | {latency} | {http} | {country} | {err} |")
+        lines.append(f"| {r.index} | {status} | `{r.scheme}` | {name} | {latency} | {http} | {err} |")
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -740,7 +718,7 @@ def main(argv: list[str]) -> int:
     print(f"Loaded {len(nodes)} unique node(s) from file, secrets, and subscriptions")
     print(f"Checking with concurrency={args.concurrency}...")
 
-    results: list[NodeResult] = [None] * len(nodes)  # type: ignore
+    results: list[NodeResult] = [None] * len(nodes)
 
     def worker(idx: int, uri: str):
         res = check_node(idx + 1, uri, args.test_url, args.timeout, args.require_country)
