@@ -483,14 +483,61 @@ def env_lines(name: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
-def fetch_subscription(url: str, user_agent: str, timeout: float) -> str:
+def fetch_subscription(
+    url: str,
+    user_agent: str,
+    timeout: float,
+    proxies: dict[str, str] | None = None,
+) -> str:
+    # Keep these headers close to real subscription clients and to the old
+    # Render/axios implementation. Some panels return HTML or 403 when Accept
+    # looks like a browser/plain-text preference, but return subscription data
+    # for Accept: */* plus a supported User-Agent.
     headers = {
         "User-Agent": user_agent,
-        "Accept": "text/plain, application/octet-stream, */*",
+        "Accept": os.environ.get("SUBSCRIPTION_ACCEPT", "*/*"),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
-    response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-    response.raise_for_status()
-    return response.text
+    last_exc: Exception | None = None
+    retries = int(os.environ.get("SUBSCRIPTION_FETCH_RETRIES", "2"))
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=max(timeout, 18),
+                allow_redirects=True,
+                proxies=proxies,
+            )
+            body = response.text or ""
+            content_type = response.headers.get("content-type", "unknown")
+            looks_html = body.lstrip().lower().startswith(("<!doctype", "<html"))
+            via = " via subscription proxy" if proxies else ""
+            print(
+                f"  ↳ status={response.status_code} content-type={content_type} bytes={len(body)}{via}"
+                + (" ⚠️ looks like HTML" if looks_html else ""),
+                flush=True,
+            )
+            response.raise_for_status()
+            return body
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(1.2)
+                continue
+            raise last_exc
+
+
+def start_subscription_proxy(uri: str) -> tuple[subprocess.Popen, str, dict[str, str]]:
+    """Start Xray as a local SOCKS proxy using a proxy URI as outbound."""
+    scheme, outbound = outbound_from_uri(uri)
+    port = free_port()
+    proc, cfg = start_xray(xray_config(outbound, port))
+    wait_port(port, proc)
+    print(f"Subscription fetch proxy started through {scheme} on 127.0.0.1:{port}", flush=True)
+    proxy_url = f"socks5h://127.0.0.1:{port}"
+    return proc, cfg, {"http": proxy_url, "https": proxy_url}
 
 
 def load_all_nodes(path: Path, timeout: float) -> list[str]:
@@ -503,20 +550,36 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes.extend(extract_proxy_links("\n".join(env_lines("SERVER_VLESS_URI"))))
     nodes.extend(extract_proxy_links("\n".join(env_lines("NODE_URIS"))))
 
-    # Secret with subscription URLs only, one URL per line. Content is fetched with Hiddify UA by default.
-    subscription_urls = env_lines("SUBSCRIPTION_URLS")
-    user_agent = os.environ.get("SUBSCRIPTION_USER_AGENT", "Hiddify").strip() or "Hiddify"
-    for sub_url in subscription_urls:
+    # Optional full proxy URI used only for downloading subscriptions.
+    # Example: SUBSCRIPTION_PROXY_URI=vless://uuid@host:443?...#fetch-proxy
+    proxy_uri = os.environ.get("SUBSCRIPTION_PROXY_URI", "").strip()
+    proxy_proc: subprocess.Popen | None = None
+    proxy_cfg = ""
+    fetch_proxies: dict[str, str] | None = None
+    if proxy_uri:
         try:
-            host = urlsplit(sub_url).hostname or "subscription"
-            print(f"Fetching subscription from {host} with User-Agent: {user_agent}", flush=True)
-            content = fetch_subscription(sub_url, user_agent, timeout)
-            extracted = extract_proxy_links(content)
-            print(f"  extracted {len(extracted)} link(s)", flush=True)
-            nodes.extend(extracted)
+            proxy_proc, proxy_cfg, fetch_proxies = start_subscription_proxy(proxy_uri)
         except Exception as exc:
-            host = urlsplit(sub_url).hostname or "subscription"
-            print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
+            print(f"Failed to start subscription proxy: {exc}", file=sys.stderr, flush=True)
+
+    try:
+        # Secret with subscription URLs only, one URL per line.
+        subscription_urls = env_lines("SUBSCRIPTION_URLS")
+        user_agent = os.environ.get("SUBSCRIPTION_USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
+        for sub_url in subscription_urls:
+            try:
+                host = urlsplit(sub_url).hostname or "subscription"
+                print(f"Fetching subscription from {host} with User-Agent: {user_agent}", flush=True)
+                content = fetch_subscription(sub_url, user_agent, timeout, fetch_proxies)
+                extracted = extract_proxy_links(content)
+                print(f"  extracted {len(extracted)} link(s)", flush=True)
+                nodes.extend(extracted)
+            except Exception as exc:
+                host = urlsplit(sub_url).hostname or "subscription"
+                print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
+    finally:
+        if proxy_proc is not None:
+            stop_xray(proxy_proc, proxy_cfg)
 
     return dedupe(nodes)
 
