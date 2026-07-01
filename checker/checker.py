@@ -103,6 +103,8 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
 
     if network == "raw":
         network = "tcp"
+    if network == "xhttp":
+        network = "splithttp"
     if network in {"h2", "http"}:
         network = "http"
     if security == "false":
@@ -110,7 +112,7 @@ def stream_settings(parsed, qs: dict[str, list[str]], fallback_host: str) -> dic
     if security == "true":
         security = "tls"
 
-    if network not in {"tcp", "ws", "grpc", "httpupgrade", "splithttp", "http"}:
+    if network not in {"tcp", "ws", "grpc", "httpupgrade", "splithttp", "xhttp", "http"}:
         raise ValueError(f"network transport '{network}' is not implemented")
 
     ss: dict[str, Any] = {"network": network, "security": security}
