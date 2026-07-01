@@ -49,10 +49,12 @@ jobs:
           TEST_URL: ${{ vars.TEST_URL || 'https://www.gstatic.com/generate_204' }}
           TIMEOUT_SECONDS: ${{ vars.TIMEOUT_SECONDS || '12' }}
           REQUIRE_COUNTRY: ${{ vars.REQUIRE_COUNTRY || '' }}
-          SUBSCRIPTION_USER_AGENT: ${{ vars.SUBSCRIPTION_USER_AGENT || 'Hiddify' }}
+          SUBSCRIPTION_USER_AGENT: ${{ vars.SUBSCRIPTION_USER_AGENT || 'HiddifyNext/2.0.5' }}
+          SUBSCRIPTION_ACCEPT: ${{ vars.SUBSCRIPTION_ACCEPT || '*/*' }}
           SERVER_VLESS_URI: ${{ secrets.SERVER_VLESS_URI }}
           NODE_URIS: ${{ secrets.NODE_URIS }}
           SUBSCRIPTION_URLS: ${{ secrets.SUBSCRIPTION_URLS }}
+          SUBSCRIPTION_PROXY_URI: ${{ secrets.SUBSCRIPTION_PROXY_URI }}
         run: |
           python scripts/check_nodes.py \
             --input nodes.txt \
