@@ -39,7 +39,7 @@ async def fetch_subscription(url: str) -> str:
     if not url:
         return ""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, headers={"User-Agent": "HiddifyNext/2.0"})
+        resp = await client.get(url, headers={"User-Agent": "HiddifyNext/2.5.7"})
         resp.raise_for_status()
         text = resp.text.strip()
 
@@ -199,7 +199,7 @@ NODES: List[Dict[str, Any]] = []
 async def load_nodes():
     """Загружает ноды из подписки (по URL или из переменной окружения)"""
     global NODES
-    sub_url = os.getenv("SUBSCRIPTION_URL", "").strip()
+    sub_url = os.getenv("NODE_URL", "").strip()
 
     if sub_url:
         try:
