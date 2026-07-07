@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+aiogram>=3.0.0
+qrcode[pil]
+pillow
+python-dotenv
+httpx
