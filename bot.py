@@ -11,6 +11,7 @@ import base64
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 import uvicorn
@@ -32,16 +33,25 @@ CONFIG = {
     "PORT": int(os.getenv("PORT", 8000)),
 }
 
-# ==================== ONE READY SUBSCRIPTION ====================
-# Put your ready-made subscription here (one line per node).
-# You can also load from a file if you prefer.
-READY_SUBSCRIPTION = """
-vless://uuid@example.com:443?encryption=none&security=tls&sni=example.com&fp=chrome&type=ws&path=%2F#🇷🇺 Россия #01
-vless://uuid2@de.example.com:443?encryption=none&security=reality&sni=de.example.com&fp=chrome&type=tcp&headerType=none#🇩🇪 Германия #02
-trojan://pass@fr.example.com:443?security=tls&sni=fr.example.com#🇫🇷 Франция #03
-ss://YWVzLTI1Ni1nY206cGFzcw@sg.example.com:443#🇸🇬 Сингапур #04
-hysteria2://pass@us.example.com:443?sni=us.example.com&obfs=salamander&obfs-password=obfs#🇺🇸 США #05
-""".strip()
+# ==================== SUBSCRIPTION FROM URL ====================
+async def fetch_subscription(url: str) -> str:
+    """Загружает подписку по ссылке (поддерживает обычный текст и base64)"""
+    if not url:
+        return ""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers={"User-Agent": "HiddifyNext/2.0"})
+        resp.raise_for_status()
+        text = resp.text.strip()
+
+        # Если это base64 — декодируем
+        try:
+            decoded = base64.b64decode(text).decode("utf-8", errors="ignore")
+            if any(proto in decoded for proto in ["vless://", "vmess://", "trojan://", "ss://", "hysteria2://"]):
+                return decoded
+        except Exception:
+            pass
+
+        return text
 
 # ==================== COUNTRY NAMES ====================
 country_names = {
@@ -183,8 +193,25 @@ def extract_country(name: str) -> str:
             return code
     return 'XX'
 
-# Load nodes once at startup
-NODES = parse_ready_subscription(READY_SUBSCRIPTION)
+# Глобальный список нод (загружается при старте)
+NODES: List[Dict[str, Any]] = []
+
+async def load_nodes():
+    """Загружает ноды из подписки (по URL или из переменной окружения)"""
+    global NODES
+    sub_url = os.getenv("SUBSCRIPTION_URL", "").strip()
+
+    if sub_url:
+        try:
+            raw = await fetch_subscription(sub_url)
+            NODES = parse_ready_subscription(raw)
+            print(f"✅ Загружено {len(NODES)} нод из подписки")
+        except Exception as e:
+            print(f"❌ Ошибка загрузки подписки: {e}")
+            NODES = []
+    else:
+        print("⚠️ SUBSCRIPTION_URL не задан — ноды не загружены")
+        NODES = []
 
 # ==================== FILTERING ====================
 def filter_nodes(protocol: str = "all", country: str = "all", count: int = 0) -> List[Dict]:
@@ -416,14 +443,21 @@ if CONFIG["BOT_TOKEN"]:
         await query.answer()
 
 # ==================== RUN ====================
+async def startup():
+    await load_nodes()
+
 if __name__ == "__main__":
+    import asyncio
+    
     print(f"🚀 {CONFIG['SERVICE_NAME']} v{CONFIG['SERVICE_VERSION']} starting...")
-    print(f"📦 Loaded {len(NODES)} nodes from ready subscription")
+    
+    # Загружаем ноды перед запуском
+    asyncio.run(startup())
+    print(f"📦 Загружено {len(NODES)} нод")
     
     if dp:
-        import asyncio
-        async def main():
+        async def run_bot():
             await dp.start_polling(bot)
-        asyncio.create_task(main())
+        asyncio.create_task(run_bot())
     
     uvicorn.run(app, host="0.0.0.0", port=CONFIG["PORT"])
