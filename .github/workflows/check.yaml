@@ -56,7 +56,6 @@ jobs:
 
       - name: Check nodes
         env:
-          # Имя ноды в отчёте, можно поменять в Settings -> Variables
           NODE_NAME: ${{ vars.NODE_NAME || 'Zapretka' }}
           TEST_URL: ${{ vars.TEST_URL || 'https://www.gstatic.com/generate_204' }}
           TIMEOUT_SECONDS: ${{ vars.TIMEOUT_SECONDS || '12' }}
