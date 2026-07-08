@@ -8,6 +8,7 @@ Python rewrite of the Node.js subscription bot.
 
 import os
 import base64
+import json
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
@@ -125,7 +126,6 @@ def parse_vless(link: str) -> Optional[Dict]:
 def parse_vmess(link: str) -> Optional[Dict]:
     try:
         data = base64.b64decode(link.replace('vmess://', '')).decode()
-        import json
         cfg = json.loads(data)
         name = cfg.get('ps', cfg.get('add', 'vmess'))
         return {
@@ -210,7 +210,7 @@ async def load_nodes():
             print(f"❌ Ошибка загрузки подписки: {e}")
             NODES = []
     else:
-        print("⚠️ SUBSCRIPTION_URL не задан — ноды не загружены")
+        print("⚠️ NODE_URL не задан — ноды не загружены")
         NODES = []
 
 # ==================== FILTERING ====================
@@ -443,21 +443,22 @@ if CONFIG["BOT_TOKEN"]:
         await query.answer()
 
 # ==================== RUN ====================
-async def startup():
+async def main():
+    print(f"🚀 {CONFIG['SERVICE_NAME']} v{CONFIG['SERVICE_VERSION']} starting...")
     await load_nodes()
+    print(f"📦 Загружено {len(NODES)} нод")
+    
+    if dp and bot:
+        print("🤖 Starting Telegram bot polling...")
+        asyncio.create_task(dp.start_polling(bot))
+    
+    config = uvicorn.Config(app, host="0.0.0.0", port=CONFIG["PORT"])
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == "__main__":
     import asyncio
-    
-    print(f"🚀 {CONFIG['SERVICE_NAME']} v{CONFIG['SERVICE_VERSION']} starting...")
-    
-    # Загружаем ноды перед запуском
-    asyncio.run(startup())
-    print(f"📦 Загружено {len(NODES)} нод")
-    
-    if dp:
-        async def run_bot():
-            await dp.start_polling(bot)
-        asyncio.create_task(run_bot())
-    
-    uvicorn.run(app, host="0.0.0.0", port=CONFIG["PORT"])
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
