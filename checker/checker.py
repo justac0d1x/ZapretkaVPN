@@ -26,13 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
 SINGBOX_BIN = os.environ.get("SINGBOX_BIN", "sing-box")
-
 SUPPORTED_XRAY = {"vless", "vmess", "trojan", "ss", "shadowsocks"}
 SUPPORTED_HY2 = {"hysteria2", "hy2"}
 ALL_KNOWN = SUPPORTED_XRAY | SUPPORTED_HY2 | {"hysteria", "tuic", "wireguard"}
-
 PROXY_LINK_RE = re.compile(r"(?i)\b(?:%s)://[^\s'\"<>]+" % "|".join(map(re.escape, sorted(ALL_KNOWN))))
-
 EMOJI_FLAG_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
 
 @dataclass
@@ -69,8 +66,6 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 def node_name(uri: str, fallback: str) -> str:
-    # Имя ноды можно переопределить через env NODE_NAME (для GitHub Actions)
-    # По умолчанию: "Zapretka"
     display_name = os.environ.get("NODE_NAME", "Zapretka").strip() or "Zapretka"
     frag = urlsplit(uri).fragment
     if frag:
