@@ -1,4 +1,4 @@
-name: Manual check
+name: Сheck nodes
 
 on:
   workflow_dispatch:
@@ -56,12 +56,13 @@ jobs:
 
       - name: Check nodes
         env:
+          # Имя ноды в отчёте, можно поменять в Settings -> Variables
+          NODE_NAME: ${{ vars.NODE_NAME || 'Zapretka' }}
           TEST_URL: ${{ vars.TEST_URL || 'https://www.gstatic.com/generate_204' }}
           TIMEOUT_SECONDS: ${{ vars.TIMEOUT_SECONDS || '12' }}
-          REQUIRE_COUNTRY: ${{ vars.REQUIRE_COUNTRY || '' }}
           USER_AGENT: ${{ vars.USER_AGENT || 'HiddifyNext/2.0.5' }}
           SUBSCRIPTION_ACCEPT: ${{ vars.SUBSCRIPTION_ACCEPT || '*/*' }}
-          SERVER_VLESS_URI: ${{ secrets.SERVER_VLESS_URI }}
+          FETCH_RETRIES: ${{ vars.FETCH_RETRIES || '4' }}
           NODE_URIS: ${{ secrets.NODE_URIS }}
           NODE_URLS: ${{ secrets.NODE_URLS }}
           PROXY_URI: ${{ secrets.PROXY_URI }}
@@ -72,8 +73,7 @@ jobs:
             --output output/sub.txt \
             --report output/report.md \
             --test-url "$TEST_URL" \
-            --timeout "$TIMEOUT_SECONDS" \
-            --require-country "$REQUIRE_COUNTRY"
+            --timeout "$TIMEOUT_SECONDS"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
