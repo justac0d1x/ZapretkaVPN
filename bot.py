@@ -217,10 +217,14 @@ async def load_nodes():
 def filter_nodes(protocol: str = "all", country: str = "all", count: int = 0) -> List[Dict]:
     result = NODES.copy()
 
+    # Нормализуем параметры для регистронезависимого поиска
+    protocol = protocol.lower()
+    country = country.upper()
+
     if protocol != "all":
         result = [n for n in result if n["protocol"] == protocol]
 
-    if country != "all":
+    if country != "ALL":
         result = [n for n in result if n.get("country") == country]
 
     if count > 0:
