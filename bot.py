@@ -73,13 +73,22 @@ country_names = {
     'XX': 'Неизвестно'
 }
 
+def get_flag_emoji(code: str) -> str:
+    """Возвращает эмодзи флага страны по ее 2-буквенному коду"""
+    code = code.upper()
+    if code == 'XX':
+        return '❓'
+    if len(code) == 2 and all(65 <= ord(char) <= 90 for char in code):
+        return "".join(chr(127397 + ord(char)) for char in code)
+    return "🌐"
+
 PROTOCOL_LABELS = {
     'all': '🌐 Все протоколы',
-    'vless': 'VLESS',
-    'vmess': 'VMess',
-    'trojan': 'Trojan',
-    'ss': 'Shadowsocks',
-    'hysteria2': 'Hysteria2'
+    'vless': '🔒 VLESS',
+    'vmess': '🚀 VMess',
+    'trojan': '🐴 Trojan',
+    'ss': '🕶️ Shadowsocks',
+    'hysteria2': '⚡ Hysteria2'
 }
 
 COUNT_OPTIONS = [5, 10, 20, 0]  # 0 = all
@@ -237,16 +246,23 @@ def generate_subscription(nodes: List[Dict]) -> str:
         return ""
     return "\n".join(n["raw"] for n in nodes)
 
-def get_stats():
+def get_stats(protocol: str = "all"):
+    """Возвращает статистику по нодам, при необходимости фильтруя страны по выбранному протоколу"""
     by_protocol = {}
     by_country = {}
+    total_nodes = 0
     for node in NODES:
         p = node["protocol"]
         c = node.get("country", "XX")
         by_protocol[p] = by_protocol.get(p, 0) + 1
-        by_country[c] = by_country.get(c, 0) + 1
+        
+        # Если фильтр протокола активен, считаем страны только для этого протокола
+        if protocol == "all" or p == protocol:
+            by_country[c] = by_country.get(c, 0) + 1
+            total_nodes += 1
+            
     return {
-        "total": len(NODES),
+        "total": total_nodes,
         "byProtocol": by_protocol,
         "byCountry": by_country
     }
@@ -306,7 +322,7 @@ if CONFIG["BOT_TOKEN"]:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str):
-        stats = get_stats()
+        stats = get_stats(protocol)
         by_country = stats["byCountry"]
         entries = sorted(by_country.items(), key=lambda x: -x[1])
 
@@ -314,7 +330,7 @@ if CONFIG["BOT_TOKEN"]:
         row = []
         for code, n in entries:
             row.append(InlineKeyboardButton(
-                text=f"{code_to_name(code)} ({n})",
+                text=f"{get_flag_emoji(code)} {code_to_name(code)} ({n})",
                 callback_data=f"c:{code}"
             ))
             if len(row) == 2:
@@ -348,7 +364,13 @@ if CONFIG["BOT_TOKEN"]:
     async def send_result(chat_id: int, sel: dict):
         url = build_sub_url(sel.get("protocol", "all"), sel.get("country", "all"), sel.get("count", 0))
         proto_label = PROTOCOL_LABELS.get(sel.get("protocol"), sel.get("protocol"))
-        country_label = "Любая страна" if sel.get("country") == "all" else code_to_name(sel.get("country"))
+        
+        country_code = sel.get("country", "all")
+        if country_code == "all":
+            country_label = "🌍 Любая страна"
+        else:
+            country_label = f"{get_flag_emoji(country_code)} {code_to_name(country_code)}"
+            
         count_label = "Все" if not sel.get("count") else str(sel.get("count"))
 
         caption = (
@@ -399,9 +421,12 @@ if CONFIG["BOT_TOKEN"]:
         sel = sessions.get(query.message.chat.id, {})
         sel["country"] = country
         sessions[query.message.chat.id] = sel
+        
+        country_display = "🌍 Любая страна" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
+        
         await query.message.edit_text(
             f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(sel.get('protocol'), sel.get('protocol'))}</b>\n"
-            f"📍 Страна: <b>{'Любая' if country == 'all' else code_to_name(country)}</b>\n\n"
+            f"📍 Страна: <b>{country_display}</b>\n\n"
             f"Шаг 3 из 3 — выберите количество:",
             parse_mode=ParseMode.HTML,
             reply_markup=count_keyboard()
