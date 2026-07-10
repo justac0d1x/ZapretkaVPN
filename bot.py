@@ -9,9 +9,6 @@ Python rewrite of the Node.js subscription bot.
 import os
 import base64
 import json
-import socket
-import ipaddress
-import asyncio
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
@@ -35,7 +32,6 @@ CONFIG = {
     # Render автоматически предоставляет RENDER_EXTERNAL_URL
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
-    "REFRESH_INTERVAL": int(os.getenv("REFRESH_INTERVAL", "3600")), # интервал автообновления в секундах (по умолчанию 1 час)
 }
 
 # ==================== SUBSCRIPTION FROM URL ====================
@@ -206,78 +202,6 @@ def extract_country(name: str) -> str:
             return code
     return 'XX'
 
-# ==================== GEOIP RESOLUTION ====================
-def is_ip_address(address: str) -> bool:
-    """Проверяет, является ли строка IPv4 или IPv6 адресом"""
-    try:
-        ipaddress.ip_address(address)
-        return True
-    except ValueError:
-        return False
-
-async def resolve_dns(hostname: str) -> Optional[str]:
-    """Асинхронно разрешает доменное имя в IP-адрес"""
-    try:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, socket.gethostbyname, hostname)
-    except Exception:
-        return None
-
-async def lookup_ip_country(ip: str, client: httpx.AsyncClient) -> Optional[str]:
-    """Быстрый запрос к базе ip2c.org для определения кода страны по IP"""
-    try:
-        resp = await client.get(f"https://ip2c.org/{ip}", timeout=3.0)
-        if resp.status_code == 200:
-            parts = resp.text.strip().split(';')
-            if len(parts) >= 2 and parts[0] == '1':
-                return parts[1]  # Возвращает двухбуквенный код страны (например, RU, US, DE)
-    except Exception as e:
-        print(f"⚠️ Ошибка GeoIP запроса для {ip}: {e}")
-    return None
-
-async def resolve_unknown_countries():
-    """Находит все ноды с неизвестной страной ('XX') и определяет их страну по IP в фоне"""
-    global NODES
-    unknown_nodes = [n for n in NODES if n.get("country") == "XX"]
-    if not unknown_nodes:
-        return
-        
-    print(f"🔍 Найдено {len(unknown_nodes)} нод с неизвестной страной. Запускаю фоновое определение по IP...")
-    
-    # Кэш для избежания повторных запросов по одинаковым доменам/IP
-    domain_to_country = {}
-    
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        async def process_node(node):
-            server = node.get("server")
-            if not server:
-                return
-                
-            if server in domain_to_country:
-                node["country"] = domain_to_country[server]
-                return
-                
-            # Шаг 1. Определение IP-адреса
-            ip = server
-            if not is_ip_address(server):
-                resolved_ip = await resolve_dns(server)
-                if resolved_ip:
-                    ip = resolved_ip
-                else:
-                    return  # Не удалось разрешить домен
-                    
-            # Шаг 2. Определение страны по IP
-            country = await lookup_ip_country(ip, client)
-            if country and country != "ZZ":
-                node["country"] = country
-                domain_to_country[server] = country
-                print(f"📍 Отрезолвлено: {server} -> {ip} -> {country}")
-                
-        # Выполняем все запросы параллельно
-        await asyncio.gather(*(process_node(n) for n in unknown_nodes))
-        
-    print(f"✅ Фоновое определение стран завершено. Нод с неопределенной страной осталось: {len([n for n in NODES if n.get('country') == 'XX'])}")
-
 # Глобальный список нод (загружается при старте)
 NODES: List[Dict[str, Any]] = []
 
@@ -291,31 +215,12 @@ async def load_nodes():
             raw = await fetch_subscription(sub_url)
             NODES = parse_ready_subscription(raw)
             print(f"✅ Загружено {len(NODES)} нод из подписки")
-            
-            # Запускаем определение неизвестных стран по IP
-            await resolve_unknown_countries()
         except Exception as e:
             print(f"❌ Ошибка загрузки подписки: {e}")
             NODES = []
     else:
         print("⚠️ NODE_URL не задан — ноды не загружены")
         NODES = []
-
-# Периодическое обновление
-async def periodic_node_refresh():
-    """Периодически обновляет ноды в фоне каждые N секунд"""
-    interval = CONFIG["REFRESH_INTERVAL"]
-    if interval < 60:
-        interval = 60  # Не чаще раза в минуту во избежание чрезмерного спама
-    while True:
-        try:
-            await asyncio.sleep(interval)
-            print("🔄 Запуск фонового обновления нод по таймеру...")
-            await load_nodes()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            print(f"❌ Ошибка в периодическом фоновом обновлении нод: {e}")
 
 # ==================== FILTERING ====================
 def filter_nodes(protocol: str = "all", country: str = "all", count: int = 0) -> List[Dict]:
@@ -372,13 +277,6 @@ async def get_subscription(protocol: str, country: str, count: int):
     if not content:
         raise HTTPException(status_code=404, detail="No nodes found")
     return PlainTextResponse(content, media_type="text/plain")
-
-@app.post("/refresh")
-async def api_refresh():
-    """Эндпоинт для принудительного обновления нод внешними сервисами"""
-    await load_nodes()
-    stats = get_stats()
-    return {"status": "success", "nodes": stats}
 
 @app.get("/status")
 async def status():
@@ -506,14 +404,6 @@ if CONFIG["BOT_TOKEN"]:
         await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=protocol_keyboard())
         sessions.pop(message.chat.id, None)
 
-    @dp.message(Command("refresh"))
-    async def cmd_refresh(message: types.Message):
-        """Ручное обновление списка нод из чата Telegram"""
-        await message.answer("🔄 Запущено ручное обновление списка нод из источника...")
-        await load_nodes()
-        stats = get_stats()
-        await message.answer(f"✅ Данные успешно обновлены!\nВсего активных нод в памяти: <b>{stats['total']}</b>", parse_mode=ParseMode.HTML)
-
     @dp.callback_query(F.data.startswith("p:"))
     async def cb_protocol(query: types.CallbackQuery):
         protocol = query.data.split(":")[1]
@@ -561,7 +451,7 @@ if CONFIG["BOT_TOKEN"]:
         stats = get_stats()
         text = f"👋 <b>Конструктор подписок</b>\n\nДоступно нод: <b>{stats['total']}</b>\n\nШаг 1 из 3 — выберите протокол:"
         await query.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=protocol_keyboard())
-        sessions.pop(message.chat.id, None)
+        sessions.pop(query.message.chat.id, None)
         await query.answer()
 
     @dp.callback_query(F.data == "back:protocol")
@@ -586,10 +476,6 @@ async def main():
     print(f"🚀 {CONFIG['SERVICE_NAME']} v{CONFIG['SERVICE_VERSION']} starting...")
     await load_nodes()
     print(f"📦 Загружено {len(NODES)} нод")
-    
-    # Запуск периодического обновления в фоне
-    if os.getenv("NODE_URL"):
-        asyncio.create_task(periodic_node_refresh())
     
     if dp and bot:
         print("🤖 Starting Telegram bot polling...")
