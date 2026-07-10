@@ -15,11 +15,12 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,6 +32,81 @@ SUPPORTED_HY2 = {"hysteria2", "hy2"}
 ALL_KNOWN = SUPPORTED_XRAY | SUPPORTED_HY2 | {"hysteria", "tuic", "wireguard"}
 PROXY_LINK_RE = re.compile(r"(?i)\b(?:%s)://[^\s'\"<>]+" % "|".join(map(re.escape, sorted(ALL_KNOWN))))
 EMOJI_FLAG_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+
+# ---------- caches for IP → country resolution ----------
+_ip_country_cache: dict[str, str | None] = {}
+_ip_country_lock = threading.Lock()
+_dns_cache: dict[str, str] = {}
+_dns_lock = threading.Lock()
+
+
+def country_code_to_flag(code: str) -> str:
+    """Convert ISO 3166-1 alpha-2 country code (e.g. 'US') to flag emoji (🇺🇸)."""
+    if not code or len(code) != 2 or not code.isalpha():
+        return "🌐"
+    # Regional indicator A = U+1F1E6; 'A' = U+0041; offset = 0x1F1E6 - 0x41 = 0x1F1A5
+    return chr(ord(code[0]) + 0x1F1A5) + chr(ord(code[1]) + 0x1F1A5)
+
+
+def resolve_host_to_ip(hostname: str) -> str | None:
+    """Resolve a hostname to an IPv4 address string.  Returns None on failure."""
+    if not hostname:
+        return None
+    with _dns_lock:
+        cached = _dns_cache.get(hostname)
+    if cached is not None:
+        return cached or None  # empty string → None
+
+    try:
+        socket.inet_aton(hostname)
+        # already a valid IPv4
+        with _dns_lock:
+            _dns_cache[hostname] = hostname
+        return hostname
+    except OSError:
+        pass
+
+    try:
+        ip = socket.gethostbyname(hostname)
+        with _dns_lock:
+            _dns_cache[hostname] = ip
+        return ip
+    except Exception:
+        with _dns_lock:
+            _dns_cache[hostname] = ""
+        return None
+
+
+def resolve_ip_country(ip: str, timeout: float = 5.0) -> str | None:
+    """Look up the ISO 3166-1 alpha-2 country code for *ip* via ip2c.org.
+
+    Returns the two-letter code on success, ``None`` otherwise.
+    Results are cached in-memory so each unique IP is queried at most once.
+    """
+    if not ip:
+        return None
+    with _ip_country_lock:
+        cached = _ip_country_cache.get(ip)
+    if cached is not None:
+        return cached or None  # None cached as sentinel
+
+    try:
+        r = requests.get(f"https://ip2c.org/{ip}", timeout=timeout)
+        if r.status_code == 200 and r.text:
+            parts = r.text.strip().split(";")
+            # format: 1;US;USA;United States of America (the)
+            if parts[0] == "1" and len(parts) >= 2 and parts[1]:
+                code = parts[1]
+                with _ip_country_lock:
+                    _ip_country_cache[ip] = code
+                return code
+    except Exception:
+        pass
+
+    with _ip_country_lock:
+        _ip_country_cache[ip] = None  # negative cache
+    return None
+
 
 @dataclass
 class NodeResult:
@@ -66,14 +142,59 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 def node_name(uri: str, fallback: str) -> str:
+    """Build a display name: ``{flag} {display_name}``.
+
+    * If the URI fragment already contains a flag emoji, reuse it.
+    * Otherwise, resolve the server hostname → IP → country via ip2c.org
+      and generate the flag from the country code.
+    * Falls back to 🌐 when everything else fails.
+    """
     display_name = os.environ.get("NODE_NAME", "Zapretka").strip() or "Zapretka"
-    frag = urlsplit(uri).fragment
+    p = urlsplit(uri)
+    frag = p.fragment
+
+    # 1. check for existing flag emoji in fragment
     if frag:
         name = unquote(frag)
         m = EMOJI_FLAG_RE.search(name)
-        flag = m.group(0) if m else "🌐"
-        return f"{flag} {display_name}"
-    return fallback
+        if m:
+            return f"{m.group(0)} {display_name}"
+
+    # 2. no flag – try IP → country resolution
+    hostname = p.hostname or ""
+    flag = "🌐"
+    if hostname:
+        ip = resolve_host_to_ip(hostname)
+        if ip:
+            country_code = resolve_ip_country(ip)
+            if country_code:
+                flag = country_code_to_flag(country_code)
+
+    return f"{flag} {display_name}"
+
+
+def uri_with_name(uri: str, name: str) -> str:
+    """Return *uri* with its fragment replaced by *name* (properly encoded)."""
+    p = urlsplit(uri)
+
+    # rebuild netloc
+    netloc = p.hostname or ""
+    if p.port:
+        default_ports = {"https": 443, "http": 80}
+        if p.port != default_ports.get(p.scheme, 0):
+            netloc += f":{p.port}"
+    if p.username:
+        auth = p.username
+        if p.password:
+            auth += f":{p.password}"
+        netloc = f"{auth}@{netloc}"
+
+    path_query = p.path or ""
+    if p.query:
+        path_query += f"?{p.query}"
+
+    fragment = quote(name, safe="")
+    return f"{p.scheme}://{netloc}{path_query}#{fragment}"
 
 
 # ---------- stream settings ----------
@@ -203,7 +324,7 @@ class ProxyRunner:
 
         self.proc = subprocess.Popen([bin_path, "run", "-c", self.cfg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.port = port
-        
+
         # wait for socks port
         deadline = time.time() + 6
         while time.time() < deadline:
@@ -243,10 +364,10 @@ def check_node(index: int, uri: str, test_url: str, timeout: float) -> NodeResul
         else:
             scheme, outbound = xray_outbound(uri)
             backend = "xray"
-        
+
         with ProxyRunner(backend, outbound) as port:
             status, latency = test_via_socks(port, test_url, timeout)
-        
+
         ok = 200 <= status < 400 or status == 204
         return NodeResult(index, name, uri, scheme, ok, latency, status, None if ok else f"bad HTTP {status}")
     except Exception as exc:
@@ -256,21 +377,21 @@ def check_node(index: int, uri: str, test_url: str, timeout: float) -> NodeResul
 # ---------- loading ----------
 def extract_proxy_links(text: str) -> list[str]:
     def normalize(v: str) -> str | None:
-        v = v.strip().strip("'\"[]{}")
+        v = v.strip().strip("'\"[]{}\n")
         return v if urlsplit(v).scheme.lower() in ALL_KNOWN else None
 
     candidates = []
     for line in text.splitlines():
         if n := normalize(line): candidates.append(n)
     candidates += [n for m in PROXY_LINK_RE.findall(text) if (n := normalize(m))]
-    
+
     # try base64 subscription decode
     compact = "".join(text.split())
     with contextlib.suppress(Exception):
         decoded = b64decode_padded(compact).decode("utf-8", errors="ignore")
         if decoded != text:
             candidates += extract_proxy_links(decoded)
-    
+
     # dedupe preserve order
     seen, out = set(), []
     for c in candidates:
@@ -323,7 +444,7 @@ def load_all_nodes(path: Path, timeout: float) -> list[str]:
     nodes = []
     if path.exists():
         nodes += extract_proxy_links(path.read_text(encoding="utf-8"))
-    
+
     nodes += extract_proxy_links("\n".join(env_lines("NODE_URIS")))
 
     # subscription fetch, optionally via PROXY_URI
@@ -383,19 +504,21 @@ def main(argv: list[str]) -> int:
             i, r = f.result(); results[i] = r
 
     results = [r for r in results if r]  # type: ignore
-    working = [r.uri for r in results if r.ok]
-    
+
+    # ---- bug-fix: write URIs with updated names (flag + display name) ----
+    working_uris = [uri_with_name(r.uri, r.name) for r in results if r.ok]
+
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text("\n".join(working) + ("\n" if working else ""), encoding="utf-8")
-    
-    report = ["# Node check report", "", f"Total: {len(results)}", f"Working: {len(working)}", "",
+    Path(args.output).write_text("\n".join(working_uris) + ("\n" if working_uris else ""), encoding="utf-8")
+
+    report = ["# Node check report", "", f"Total: {len(results)}", f"Working: {len(working_uris)}", "",
         "| # | Status | Scheme | Name | Latency | HTTP | Error |",
         "|---:|:---:|---|---|---:|---:|:---|"]
     for r in results:
         report.append(f"| {r.index} | {'✅' if r.ok else '❌'} | `{r.scheme}` | {r.name} | {r.latency_ms or ''} | {r.status_code or ''} | {(r.error or '').replace('|','\\/')} |")
     Path(args.report).write_text("\n".join(report) + "\n", encoding="utf-8")
-    
-    print(f"Working: {len(working)}/{len(results)}")
+
+    print(f"Working: {len(working_uris)}/{len(results)}")
     return 0
 
 if __name__ == "__main__":
