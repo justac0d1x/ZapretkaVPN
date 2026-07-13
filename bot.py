@@ -69,8 +69,12 @@ country_names = {
     'US': 'США', 'CA': 'Канада',
     'BR': 'Бразилия', 'AR': 'Аргентина',
     'CN': 'Китай', 'HK': 'Гонконг', 'JP': 'Япония', 'KR': 'Южная Корея',
-    'SG': 'Сингапур', 'MY': 'Малайзия', 'TH': 'Таиланд',
+    'TW': 'Тайвань', 'SG': 'Сингапур', 'MY': 'Малайзия', 'TH': 'Таиланд',
     'TR': 'Турция', 'IL': 'Израиль', 'AE': 'ОАЭ',
+    'IN': 'Индия', 'IR': 'Иран', 'AU': 'Австралия', 'NZ': 'Новая Зеландия',
+    'KZ': 'Казахстан', 'AL': 'Албания', 'RS': 'Сербия', 'SA': 'Саудовская Аравия',
+    'SC': 'Сейшельские о-ва', 'CO': 'Колумбия', 'ZA': 'ЮАР',
+    'MT': 'Мальта', 'CY': 'Кипр',
     'XX': 'Неизвестно'
 }
 
@@ -133,9 +137,16 @@ def parse_vless(link: str) -> Optional[Dict]:
     except:
         return None
 
+def _b64decode_padded(data: str) -> bytes:
+    """Декодирует base64 с автоматическим добавлением padding."""
+    data = data.strip().replace("-", "+").replace("_", "/")
+    data += "=" * (-len(data) % 4)
+    return base64.b64decode(data)
+
+
 def parse_vmess(link: str) -> Optional[Dict]:
     try:
-        data = base64.b64decode(link.replace('vmess://', '')).decode()
+        data = _b64decode_padded(link.replace('vmess://', '').split('#', 1)[0]).decode()
         cfg = json.loads(data)
         name = cfg.get('ps', cfg.get('add', 'vmess'))
         return {
