@@ -97,6 +97,7 @@ PROTOCOL_LABELS = {
 }
 
 COUNT_OPTIONS = [5, 10, 20, 0]  # 0 = all
+COUNTRIES_PER_PAGE = 6           # Кол-во стран на одной странице клавиатуры
 
 # ==================== PARSE READY SUBSCRIPTION ====================
 def parse_ready_subscription(text: str) -> List[Dict[str, Any]]:
@@ -343,14 +344,20 @@ if CONFIG["BOT_TOKEN"]:
             rows.append(row)
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def country_keyboard(protocol: str):
+    def country_keyboard(protocol: str, page: int = 0):
         stats = get_stats(protocol)
         by_country = stats["byCountry"]
         entries = sorted(by_country.items(), key=lambda x: -x[1])
 
+        total_pages = max(1, (len(entries) + COUNTRIES_PER_PAGE - 1) // COUNTRIES_PER_PAGE)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * COUNTRIES_PER_PAGE
+        page_entries = entries[start:start + COUNTRIES_PER_PAGE]
+
         rows = [[InlineKeyboardButton(text="🌍 Любая страна", callback_data="c:all")]]
         row = []
-        for code, n in entries:
+        for code, n in page_entries:
             row.append(InlineKeyboardButton(
                 text=f"{get_flag_emoji(code)} {code_to_name(code)} ({n})",
                 callback_data=f"c:{code}"
@@ -360,7 +367,20 @@ if CONFIG["BOT_TOKEN"]:
                 row = []
         if row:
             rows.append(row)
-        rows.append([InlineKeyboardButton(text="« Назад к протоколу", callback_data="back:protocol")])
+
+        # Навигация: ◀️ Назад | Стр. 1/5 | Ещё ▶️
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"cp:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(
+            text=f"{page + 1}/{total_pages}",
+            callback_data="noop"
+        ))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(text="Ещё ▶️", callback_data=f"cp:{page + 1}"))
+        rows.append(nav_row)
+
+        rows.append([InlineKeyboardButton(text="« К протоколу", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def count_keyboard():
@@ -430,8 +450,14 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_protocol(query: types.CallbackQuery):
         protocol = query.data.split(":")[1]
         sessions[query.message.chat.id] = {"protocol": protocol}
+        stats = get_stats(protocol)
+        total_countries = len(stats["byCountry"])
+        text = (
+            f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
+            f"Шаг 2 из 3 — выберите страну ({total_countries} стран):"
+        )
         await query.message.edit_text(
-            f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\nШаг 2 из 3 — выберите страну:",
+            text,
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol)
         )
@@ -453,6 +479,22 @@ if CONFIG["BOT_TOKEN"]:
             parse_mode=ParseMode.HTML,
             reply_markup=count_keyboard()
         )
+        await query.answer()
+
+    @dp.callback_query(F.data.startswith("cp:"))
+    async def cb_country_page(query: types.CallbackQuery):
+        page = int(query.data.split(":")[1])
+        sel = sessions.get(query.message.chat.id, {})
+        protocol = sel.get("protocol", "all")
+        await query.message.edit_text(
+            f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\nШаг 2 из 3 — выберите страну:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=country_keyboard(protocol, page)
+        )
+        await query.answer()
+
+    @dp.callback_query(F.data == "noop")
+    async def cb_noop(query: types.CallbackQuery):
         await query.answer()
 
     @dp.callback_query(F.data.startswith("n:"))
@@ -486,10 +528,17 @@ if CONFIG["BOT_TOKEN"]:
     @dp.callback_query(F.data == "back:country")
     async def cb_back_country(query: types.CallbackQuery):
         sel = sessions.get(query.message.chat.id, {})
+        protocol = sel.get("protocol", "all")
+        stats = get_stats(protocol)
+        total_countries = len(stats["byCountry"])
+        text = (
+            f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
+            f"Шаг 2 из 3 — выберите страну ({total_countries} стран):"
+        )
         await query.message.edit_text(
-            f"🔌 Протокол: <b>{PROTOCOL_LABELS.get(sel.get('protocol'), sel.get('protocol'))}</b>\n\nШаг 2 из 3 — выберите страну:",
+            text,
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(sel.get("protocol", "all"))
+            reply_markup=country_keyboard(protocol)
         )
         await query.answer()
 
