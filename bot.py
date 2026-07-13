@@ -380,7 +380,7 @@ if CONFIG["BOT_TOKEN"]:
             nav_row.append(InlineKeyboardButton(text="Ещё ▶️", callback_data=f"cp:{page + 1}"))
         rows.append(nav_row)
 
-        rows.append([InlineKeyboardButton(text="« К протоколу", callback_data="back:protocol")])
+        rows.append([InlineKeyboardButton(text="⏪ К протоколу", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def count_keyboard():
@@ -396,7 +396,7 @@ if CONFIG["BOT_TOKEN"]:
                 row = []
         if row:
             rows.append(row)
-        rows.append([InlineKeyboardButton(text="« Назад к стране", callback_data="back:country")])
+        rows.append([InlineKeyboardButton(text="⏪ К стране", callback_data="back:country")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def build_sub_url(protocol: str, country: str, count: int) -> str:
