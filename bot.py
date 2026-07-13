@@ -7,6 +7,7 @@ Python rewrite of the Node.js subscription bot.
 """
 
 import os
+import re
 import base64
 import json
 from typing import List, Dict, Any, Optional
@@ -193,13 +194,23 @@ def parse_hysteria2(link: str) -> Optional[Dict]:
     except:
         return None
 
+# Региональные индикаторы Unicode: U+1F1E6..U+1F1FF — по два символа = один флаг страны
+FLAG_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+
+
 def extract_country(name: str) -> str:
-    flag_to_country = {
-        '🇷🇺': 'RU', '🇩🇪': 'DE', '🇫🇷': 'FR', '🇸🇬': 'SG', '🇺🇸': 'US'
-    }
-    for flag, code in flag_to_country.items():
-        if flag in name:
-            return code
+    """Извлекает ISO 3166-1 alpha-2 код страны из эмодзи-флага в имени ноды.
+
+    Работает с ЛЮБЫМ флагом страны, а не только с захардкоженными.
+    Если флаг не найден — возвращает 'XX'.
+    """
+    if name:
+        m = FLAG_EMOJI_RE.search(name)
+        if m:
+            flag = m.group(0)
+            # Каждый символ регионального индикатора: chr(ord('A') + 127397)
+            # Обратное преобразование: ord(c) - 127397 → буква
+            return "".join(chr(ord(c) - 127397) for c in flag).upper()
     return 'XX'
 
 # Глобальный список нод (загружается при старте)
