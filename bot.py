@@ -37,8 +37,30 @@ CONFIG = {
     "PORT": int(os.getenv("PORT", 8000)),
 }
 
-# Путь к фоновой картинке для QR (qr.jpg рядом с bot.py)
-_QR_BACKGROUND = Path(__file__).resolve().parent / "qr.jpg"
+# Путь к фоновой картинке для QR — ищем в нескольких местах
+def _find_qr_background() -> Optional[str]:
+    """Ищет qr.jpg рядом со скриптом, в cwd и по env-переменной."""
+    # 1. Явный путь через env-переменную
+    env_path = os.getenv("QR_BACKGROUND", "").strip()
+    if env_path and Path(env_path).is_file():
+        return env_path
+
+    # 2. Рядом с bot.py
+    script_dir = Path(__file__).resolve().parent
+    for candidate in [script_dir / "qr.jpg", script_dir / "static" / "qr.jpg"]:
+        if candidate.is_file():
+            return str(candidate)
+
+    # 3. В текущей рабочей директории
+    cwd_path = Path.cwd() / "qr.jpg"
+    if cwd_path.is_file():
+        return str(cwd_path)
+
+    return None
+
+
+_QR_BACKGROUND = _find_qr_background()
+print(f"🖼️ QR background: {_QR_BACKGROUND or 'не найден, используется заливка'}")
 
 
 # ==================== STYLED QR GENERATOR ====================
@@ -58,7 +80,7 @@ def make_telegram_qr(
     border: int = 4,
     radius: float = 0.38,
     foreground: str = "#FFFFFF",
-    background_image: Path | str | None = None,
+    background_image: Optional[str] = None,
     blur: float = 14.0,
     dim: float = 0.12,
 ) -> BytesIO:
@@ -127,7 +149,8 @@ def make_telegram_qr(
     mask = mask.resize((final_side, final_side), Image.Resampling.LANCZOS)
 
     # Фон: картинка с размытием и затемнением, либо сплошной цвет
-    if background_image is not None and Path(background_image).is_file():
+    bg_found = background_image and Path(background_image).is_file()
+    if bg_found:
         with Image.open(background_image) as source:
             backdrop = ImageOps.fit(
                 source.convert("RGB"),
