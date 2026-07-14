@@ -10,6 +10,7 @@ import os
 import re
 import base64
 import json
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qs
 
@@ -23,6 +24,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedIn
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 import qrcode
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 from io import BytesIO
 
 # ==================== CONFIG ====================
@@ -34,6 +36,118 @@ CONFIG = {
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
 }
+
+# Путь к фоновой картинке для QR (qr.jpg рядом с bot.py)
+_QR_BACKGROUND = Path(__file__).resolve().parent / "qr.jpg"
+
+
+# ==================== STYLED QR GENERATOR ====================
+def _qr_is_finder(row: int, col: int, n: int) -> bool:
+    """True для одной из трёх зон 7x7 с маркерами QR."""
+    return (
+        (row < 7 and col < 7)
+        or (row < 7 and col >= n - 7)
+        or (row >= n - 7 and col < 7)
+    )
+
+
+def make_telegram_qr(
+    data: str,
+    *,
+    box_size: int = 32,
+    border: int = 4,
+    radius: float = 0.38,
+    foreground: str = "#FFFFFF",
+    background_image: Path | str | None = None,
+    blur: float = 14.0,
+    dim: float = 0.12,
+) -> BytesIO:
+    """Создаёт стилизованный QR-код с округлыми модулями и фоном из картинки.
+
+    Возвращает BytesIO с PNG-изображением, готовым к отправке.
+    """
+    if not data:
+        raise ValueError("Строка data не должна быть пустой")
+
+    # Высокая коррекция ошибок для надёжности стилизации
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=1,
+        border=0,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n = len(matrix)
+
+    # Рисуем крупнее, затем уменьшаем — так границы получаются гладкими
+    scale = 4
+    cell = box_size * scale
+    offset = border * cell
+    side = (n + border * 2) * cell
+
+    # Маска: модули QR поверх фона
+    mask = Image.new("L", (side, side), 0)
+    draw = ImageDraw.Draw(mask)
+    corner = int(cell * radius)
+
+    def bounds(row: int, col: int) -> tuple:
+        x0 = offset + col * cell
+        y0 = offset + row * cell
+        return x0, y0, x0 + cell, y0 + cell
+
+    # Округлённые модули с перемычками между соседними
+    for row in range(n):
+        for col in range(n):
+            if not matrix[row][col] or _qr_is_finder(row, col, n):
+                continue
+
+            x0, y0, x1, y1 = bounds(row, col)
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=corner, fill=255)
+
+            if col + 1 < n and matrix[row][col + 1] and not _qr_is_finder(row, col + 1, n):
+                draw.rectangle((x0 + cell // 2, y0, x1 + cell // 2, y1), fill=255)
+
+            if row + 1 < n and matrix[row + 1][col] and not _qr_is_finder(row + 1, col, n):
+                draw.rectangle((x0, y0 + cell // 2, x1, y1 + cell // 2), fill=255)
+
+    # Три фирменных маркера: рамка 7x7, белое окно 5x5, центр 3x3
+    for row, col in ((0, 0), (0, n - 7), (n - 7, 0)):
+        x0, y0, _, _ = bounds(row, col)
+        outer = (x0, y0, x0 + 7 * cell, y0 + 7 * cell)
+        middle = (x0 + cell, y0 + cell, x0 + 6 * cell, y0 + 6 * cell)
+        inner = (x0 + 2 * cell, y0 + 2 * cell, x0 + 5 * cell, y0 + 5 * cell)
+
+        draw.rounded_rectangle(outer, radius=int(1.22 * cell), fill=255)
+        draw.rounded_rectangle(middle, radius=int(1.25 * cell), fill=0)
+        draw.rounded_rectangle(inner, radius=int(0.8 * cell), fill=255)
+
+    final_side = (n + border * 2) * box_size
+    mask = mask.resize((final_side, final_side), Image.Resampling.LANCZOS)
+
+    # Фон: картинка с размытием и затемнением, либо сплошной цвет
+    if background_image is not None and Path(background_image).is_file():
+        with Image.open(background_image) as source:
+            backdrop = ImageOps.fit(
+                source.convert("RGB"),
+                (final_side, final_side),
+                method=Image.Resampling.LANCZOS,
+            )
+        if blur:
+            backdrop = backdrop.filter(ImageFilter.GaussianBlur(blur))
+        if dim:
+            backdrop = ImageEnhance.Brightness(backdrop).enhance(1.0 - dim)
+    else:
+        backdrop = Image.new("RGB", (final_side, final_side), "#1A1A2E")
+
+    ink = Image.new("RGB", (final_side, final_side), foreground)
+    image = Image.composite(ink, backdrop, mask)
+
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 # ==================== SUBSCRIPTION FROM URL ====================
 async def fetch_subscription(url: str) -> str:
@@ -423,11 +537,8 @@ if CONFIG["BOT_TOKEN"]:
             f"🔗 <code>{url}</code>"
         )
 
-        # Generate QR
-        qr = qrcode.make(url)
-        buf = BytesIO()
-        qr.save(buf, format="PNG")
-        buf.seek(0)
+        # Generate styled QR
+        buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
 
         await bot.send_photo(
             chat_id,
