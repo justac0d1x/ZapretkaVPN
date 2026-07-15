@@ -459,7 +459,7 @@ if CONFIG["BOT_TOKEN"]:
         if row:
             rows.append(row)
         if existing_rules > 0:
-            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:review")])
+            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="restart")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str, page: int = 0):
@@ -515,7 +515,7 @@ if CONFIG["BOT_TOKEN"]:
         if n > 0:
             rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove")])
         if n > 1:
-            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:review")])
+            rows.append([InlineKeyboardButton(text="🏠 В начало", callback_data="restart")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     # ---------- send result ----------
@@ -720,15 +720,8 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "back:review")
     async def cb_back_review(query: types.CallbackQuery):
-        sel = _sess(query.message.chat.id)
-        rules = sel.get("rules", [])
-        if not rules:
-            await _show_start(query.message, edit=True)
-        else:
-            await query.message.edit_text(
-                _review_text(rules), parse_mode=ParseMode.HTML,
-                reply_markup=review_keyboard(len(rules)),
-            )
+        # Не используется — оставлен как заглушка на случай старых callback'ов
+        await _show_start(query.message, edit=True)
         await query.answer()
 
 
