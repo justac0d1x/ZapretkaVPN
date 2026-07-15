@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Python rewrite of the Node.js subscription bot.
-- Custom subscriptions: combine up to 5 rules (protocol + country + count).
-- Compact URL format: /sub/vRU5:tNL3:sUS10
+ZapretkaVPN Bot — конструктор кастомных подписок.
+До 5 правил (протокол + страна + количество) в одной подписке.
+Компактный формат URL: /sub/vRU5:tNL3:sUS10
 """
 
 import os
@@ -11,11 +11,11 @@ import base64
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from urllib.parse import quote, unquote, urlparse, parse_qs
+from urllib.parse import unquote, urlparse
 
 import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 import uvicorn
 
 from aiogram import Bot, Dispatcher, types, F
@@ -29,7 +29,7 @@ from io import BytesIO
 # ==================== CONFIG ====================
 CONFIG = {
     "SERVICE_NAME": os.getenv("SERVICE_NAME", "Zapretka"),
-    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.0.0-py"),
+    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.1.0-py"),
     "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
@@ -38,15 +38,15 @@ CONFIG = {
 MAX_RULES = 5
 
 # ==================== COMPACT SPEC ====================
-# Protocol letters: v=vless, m=vmess, t=trojan, s=shadowsocks, h=hysteria2
-PROTO_LETTERS = {"v": "vless", "m": "vmess", "t": "trojan", "s": "ss", "h": "hysteria2"}
+# a = все протоколы, v = vless, m = vmess, t = trojan, s = ss, h = hysteria2
+PROTO_LETTERS = {"a": "all", "v": "vless", "m": "vmess", "t": "trojan", "s": "ss", "h": "hysteria2"}
 PROTO_TO_LETTER = {v: k for k, v in PROTO_LETTERS.items()}
+PROTO_ORDER = ["vless", "vmess", "trojan", "ss", "hysteria2"]
 
-_SPEC_RULE_RE = re.compile(r"^([vmthsh])([A-Z]{2}|\*)(\d*)$")
+_SPEC_RULE_RE = re.compile(r"^([avmthsh])([A-Z]{2}|\*)(\d*)$")
 
 
 def parse_compact_spec(spec: str) -> List[Dict[str, Any]]:
-    """Parse compact spec like 'vRU5:tNL3' into list of rule dicts."""
     rules = []
     for part in spec.split(":"):
         m = _SPEC_RULE_RE.match(part)
@@ -64,10 +64,9 @@ def parse_compact_spec(spec: str) -> List[Dict[str, Any]]:
 
 
 def build_compact_spec(rules: List[Dict]) -> str:
-    """Build compact spec from list of rule dicts: vRU5:tNL3"""
     parts = []
     for r in rules:
-        letter = PROTO_TO_LETTER.get(r["protocol"], "v")
+        letter = PROTO_TO_LETTER.get(r["protocol"], "a")
         country = "*" if r["country"] == "all" else r["country"]
         count = str(r["count"]) if r["count"] else ""
         parts.append(f"{letter}{country}{count}")
@@ -76,7 +75,6 @@ def build_compact_spec(rules: List[Dict]) -> str:
 
 # ==================== QR BACKGROUND ====================
 def _find_qr_background() -> Optional[str]:
-    """Ищет qr.jpg рядом со скриптом, в cwd и по env-переменной."""
     env_path = os.getenv("QR_BACKGROUND", "").strip()
     if env_path and Path(env_path).is_file():
         return env_path
@@ -96,11 +94,7 @@ print(f"🖼️ QR background: {_QR_BACKGROUND or 'не найден, испол
 
 # ==================== STYLED QR GENERATOR ====================
 def _qr_is_finder(row: int, col: int, n: int) -> bool:
-    return (
-        (row < 7 and col < 7)
-        or (row < 7 and col >= n - 7)
-        or (row >= n - 7 and col < 7)
-    )
+    return (row < 7 and col < 7) or (row < 7 and col >= n - 7) or (row >= n - 7 and col < 7)
 
 
 def make_telegram_qr(
@@ -117,29 +111,22 @@ def make_telegram_qr(
     if not data:
         raise ValueError("Строка data не должна быть пустой")
 
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=1,
-        border=0,
-    )
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H,
+                        box_size=1, border=0)
     qr.add_data(data)
     qr.make(fit=True)
     matrix = qr.get_matrix()
     n = len(matrix)
 
-    scale = 4
-    cell = box_size * scale
-    offset = border * cell
-    side = (n + border * 2) * cell
+    scale, cell = 4, box_size * scale
+    offset, side = border * cell, (n + border * 2) * cell
 
     mask = Image.new("L", (side, side), 0)
     draw = ImageDraw.Draw(mask)
     corner = int(cell * radius)
 
-    def bounds(row: int, col: int) -> tuple:
-        x0 = offset + col * cell
-        y0 = offset + row * cell
+    def bounds(r, c):
+        x0, y0 = offset + c * cell, offset + r * cell
         return x0, y0, x0 + cell, y0 + cell
 
     for row in range(n):
@@ -155,12 +142,9 @@ def make_telegram_qr(
 
     for row, col in ((0, 0), (0, n - 7), (n - 7, 0)):
         x0, y0, _, _ = bounds(row, col)
-        outer = (x0, y0, x0 + 7 * cell, y0 + 7 * cell)
-        middle = (x0 + cell, y0 + cell, x0 + 6 * cell, y0 + 6 * cell)
-        inner = (x0 + 2 * cell, y0 + 2 * cell, x0 + 5 * cell, y0 + 5 * cell)
-        draw.rounded_rectangle(outer, radius=int(1.22 * cell), fill=255)
-        draw.rounded_rectangle(middle, radius=int(1.25 * cell), fill=0)
-        draw.rounded_rectangle(inner, radius=int(0.8 * cell), fill=255)
+        draw.rounded_rectangle((x0, y0, x0 + 7 * cell, y0 + 7 * cell), radius=int(1.22 * cell), fill=255)
+        draw.rounded_rectangle((x0 + cell, y0 + cell, x0 + 6 * cell, y0 + 6 * cell), radius=int(1.25 * cell), fill=0)
+        draw.rounded_rectangle((x0 + 2 * cell, y0 + 2 * cell, x0 + 5 * cell, y0 + 5 * cell), radius=int(0.8 * cell), fill=255)
 
     final_side = (n + border * 2) * box_size
     mask = mask.resize((final_side, final_side), Image.Resampling.LANCZOS)
@@ -168,11 +152,7 @@ def make_telegram_qr(
     bg_found = background_image and Path(background_image).is_file()
     if bg_found:
         with Image.open(background_image) as source:
-            backdrop = ImageOps.fit(
-                source.convert("RGB"),
-                (final_side, final_side),
-                method=Image.Resampling.LANCZOS,
-            )
+            backdrop = ImageOps.fit(source.convert("RGB"), (final_side, final_side), method=Image.Resampling.LANCZOS)
         if blur:
             backdrop = backdrop.filter(ImageFilter.GaussianBlur(blur))
         if dim:
@@ -226,7 +206,7 @@ country_names = {
     'KZ': 'Казахстан', 'AL': 'Албания', 'RS': 'Сербия', 'SA': 'Саудовская Аравия',
     'SC': 'Сейшельские о-ва', 'CO': 'Колумбия', 'ZA': 'ЮАР',
     'MT': 'Мальта', 'CY': 'Кипр',
-    'XX': 'Неизвестно'
+    'XX': 'Неизвестно',
 }
 
 
@@ -234,63 +214,51 @@ def get_flag_emoji(code: str) -> str:
     code = code.upper()
     if code == 'XX':
         return '❓'
-    if len(code) == 2 and all(65 <= ord(char) <= 90 for char in code):
-        return "".join(chr(127397 + ord(char)) for char in code)
+    if len(code) == 2 and all(65 <= ord(c) <= 90 for c in code):
+        return "".join(chr(127397 + ord(c)) for c in code)
     return "🌐"
 
 
 PROTOCOL_LABELS = {
-    'vless': '🔒 VLESS',
-    'vmess': '🚀 VMess',
-    'trojan': '🐴 Trojan',
-    'ss': '🕶️ Shadowsocks',
-    'hysteria2': '⚡ Hysteria2'
+    'all': '🌐 Все протоколы',
+    'vless': '🔒 VLESS', 'vmess': '🚀 VMess',
+    'trojan': '🐴 Trojan', 'ss': '🕶️ Shadowsocks', 'hysteria2': '⚡ Hysteria2',
 }
 
-COUNT_OPTIONS = [5, 10, 20, 0]  # 0 = all
+COUNT_OPTIONS = [5, 10, 20, 0]
 COUNTRIES_PER_PAGE = 6
 
 
-# ==================== PARSE READY SUBSCRIPTION ====================
-def parse_ready_subscription(text: str) -> List[Dict[str, Any]]:
-    nodes = []
-    for line in text.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        node = None
-        if line.startswith('vless://'):
-            node = parse_vless(line)
-        elif line.startswith('vmess://'):
-            node = parse_vmess(line)
-        elif line.startswith('trojan://'):
-            node = parse_trojan(line)
-        elif line.startswith('ss://'):
-            node = parse_shadowsocks(line)
-        elif line.startswith(('hysteria2://', 'hy2://')):
-            node = parse_hysteria2(line)
-        if node:
-            nodes.append(node)
-    return nodes
+# ==================== PARSE NODES ====================
+FLAG_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
 
 
-def parse_vless(link: str) -> Optional[Dict]:
-    try:
-        url = urlparse(link)
-        name = unquote(url.fragment) if url.fragment else url.hostname
-        return {
-            "protocol": "vless", "name": name, "server": url.hostname,
-            "port": int(url.port or 443), "uuid": url.username,
-            "raw": link, "country": extract_country(name)
-        }
-    except:
-        return None
+def extract_country(name: str) -> str:
+    if name:
+        m = FLAG_EMOJI_RE.search(name)
+        if m:
+            return "".join(chr(ord(c) - 127397) for c in m.group(0)).upper()
+    return 'XX'
 
 
 def _b64decode_padded(data: str) -> bytes:
     data = data.strip().replace("-", "+").replace("_", "/")
     data += "=" * (-len(data) % 4)
     return base64.b64decode(data)
+
+
+def _parse_url_node(link: str, protocol: str, normalize: Optional[str] = None) -> Optional[Dict]:
+    """Парсер для протоколов на базе URL (vless, trojan, ss, hysteria2)."""
+    try:
+        url = urlparse(link if normalize is None else link.replace(normalize, "hysteria2://"))
+        name = unquote(url.fragment) if url.fragment else url.hostname
+        return {
+            "protocol": protocol, "name": name, "server": url.hostname,
+            "port": int(url.port or 443), "raw": link,
+            "country": extract_country(name),
+        }
+    except Exception:
+        return None
 
 
 def parse_vmess(link: str) -> Optional[Dict]:
@@ -300,63 +268,37 @@ def parse_vmess(link: str) -> Optional[Dict]:
         name = cfg.get('ps', cfg.get('add', 'vmess'))
         return {
             "protocol": "vmess", "name": name, "server": cfg.get('add'),
-            "port": int(cfg.get('port', 443)),
-            "raw": link, "country": extract_country(name)
+            "port": int(cfg.get('port', 443)), "raw": link,
+            "country": extract_country(name),
         }
-    except:
+    except Exception:
         return None
 
 
-def parse_trojan(link: str) -> Optional[Dict]:
-    try:
-        url = urlparse(link)
-        name = unquote(url.fragment) if url.fragment else url.hostname
-        return {
-            "protocol": "trojan", "name": name, "server": url.hostname,
-            "port": int(url.port or 443),
-            "raw": link, "country": extract_country(name)
-        }
-    except:
-        return None
+# Маппинг: префикс → (парсер, аргументы)
+_PARSE_MAP = {
+    "vless://": (_parse_url_node, "vless", None),
+    "trojan://": (_parse_url_node, "trojan", None),
+    "ss://":     (_parse_url_node, "ss", None),
+    "hysteria2://": (_parse_url_node, "hysteria2", None),
+    "hy2://":    (_parse_url_node, "hysteria2", "hy2://"),
+    "vmess://":  (parse_vmess, None, None),
+}
 
 
-def parse_shadowsocks(link: str) -> Optional[Dict]:
-    try:
-        url = urlparse(link)
-        name = unquote(url.fragment) if url.fragment else url.hostname
-        return {
-            "protocol": "ss", "name": name, "server": url.hostname,
-            "port": int(url.port or 443),
-            "raw": link, "country": extract_country(name)
-        }
-    except:
-        return None
-
-
-def parse_hysteria2(link: str) -> Optional[Dict]:
-    try:
-        url = urlparse(link.replace('hy2://', 'hysteria2://'))
-        name = unquote(url.fragment) if url.fragment else url.hostname
-        return {
-            "protocol": "hysteria2", "name": name, "server": url.hostname,
-            "port": int(url.port or 443),
-            "raw": link, "country": extract_country(name)
-        }
-    except:
-        return None
-
-
-# Региональные индикаторы Unicode
-FLAG_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
-
-
-def extract_country(name: str) -> str:
-    if name:
-        m = FLAG_EMOJI_RE.search(name)
-        if m:
-            flag = m.group(0)
-            return "".join(chr(ord(c) - 127397) for c in flag).upper()
-    return 'XX'
+def parse_ready_subscription(text: str) -> List[Dict[str, Any]]:
+    nodes = []
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for prefix, (parser, proto, norm) in _PARSE_MAP.items():
+            if line.startswith(prefix):
+                node = parser(line, proto, normalize=norm) if proto else parser(line)
+                if node:
+                    nodes.append(node)
+                break
+    return nodes
 
 
 # ==================== NODES ====================
@@ -379,15 +321,12 @@ async def load_nodes():
         NODES = []
 
 
-# ==================== FILTERING ====================
+# ==================== FILTERING & STATS ====================
 def filter_nodes(protocol: str = "all", country: str = "all", count: int = 0) -> List[Dict]:
-    result = NODES.copy()
-    protocol = protocol.lower()
-    country = country.upper()
-
+    result = NODES
     if protocol != "all":
         result = [n for n in result if n["protocol"] == protocol]
-    if country != "ALL":
+    if country != "all":
         result = [n for n in result if n.get("country") == country]
     if count > 0:
         result = result[:count]
@@ -395,13 +334,10 @@ def filter_nodes(protocol: str = "all", country: str = "all", count: int = 0) ->
 
 
 def filter_nodes_by_spec(spec: str) -> List[Dict]:
-    """Filter nodes using compact spec like 'vRU5:tNL3'."""
     rules = parse_compact_spec(spec)
-    seen = set()
-    result = []
+    seen, result = set(), []
     for rule in rules:
-        nodes = filter_nodes(rule["protocol"], rule["country"], rule["count"])
-        for n in nodes:
+        for n in filter_nodes(rule["protocol"], rule["country"], rule["count"]):
             if n["raw"] not in seen:
                 seen.add(n["raw"])
                 result.append(n)
@@ -409,23 +345,19 @@ def filter_nodes_by_spec(spec: str) -> List[Dict]:
 
 
 def generate_subscription(nodes: List[Dict]) -> str:
-    if not nodes:
-        return ""
-    return "\n".join(n["raw"] for n in nodes)
+    return "\n".join(n["raw"] for n in nodes) if nodes else ""
 
 
 def get_stats(protocol: str = "all"):
-    by_protocol = {}
-    by_country = {}
-    total_nodes = 0
+    by_protocol, by_country = {}, {}
+    total = 0
     for node in NODES:
-        p = node["protocol"]
-        c = node.get("country", "XX")
+        p, c = node["protocol"], node.get("country", "XX")
         by_protocol[p] = by_protocol.get(p, 0) + 1
         if protocol == "all" or p == protocol:
             by_country[c] = by_country.get(c, 0) + 1
-            total_nodes += 1
-    return {"total": total_nodes, "byProtocol": by_protocol, "byCountry": by_country}
+            total += 1
+    return {"total": total, "byProtocol": by_protocol, "byCountry": by_country}
 
 
 # ==================== FASTAPI ====================
@@ -434,7 +366,6 @@ app = FastAPI(title=CONFIG["SERVICE_NAME"])
 
 @app.get("/sub/{spec:path}")
 async def get_subscription(spec: str):
-    """Subscription by compact spec: /sub/vRU5:tNL3:sUS10"""
     try:
         nodes = filter_nodes_by_spec(spec)
     except ValueError:
@@ -447,8 +378,7 @@ async def get_subscription(spec: str):
 
 @app.get("/status")
 async def status():
-    stats = get_stats()
-    return {"status": "ok", "nodes": stats}
+    return {"status": "ok", "nodes": get_stats()}
 
 
 @app.get("/health")
@@ -466,38 +396,64 @@ if CONFIG["BOT_TOKEN"]:
 
     sessions = {}  # chat_id -> {"rules": [...], "current": {...}}
 
+    # ---------- helpers ----------
+
+    def _sess(chat_id: int) -> dict:
+        return sessions.setdefault(chat_id, {"rules": [], "current": {}})
+
+    def _rule_num(chat_id: int) -> int:
+        return len(_sess(chat_id).get("rules", [])) + 1
+
     def code_to_name(code: str) -> str:
         return country_names.get(code, code)
 
     def rule_display(rule: dict) -> str:
-        """Format one rule for display: 🇷🇺 VLESS × 5"""
         proto = PROTOCOL_LABELS.get(rule["protocol"], rule["protocol"])
-        if rule["country"] == "all":
-            country = "🌍 Любая"
-        else:
-            country = f"{get_flag_emoji(rule['country'])} {code_to_name(rule['country'])}"
+        country = "🌍 Любая" if rule["country"] == "all" else f"{get_flag_emoji(rule['country'])} {code_to_name(rule['country'])}"
         count = "все" if not rule["count"] else str(rule["count"])
         return f"{country} {proto} × {count}"
 
-    def review_text(rules: list) -> str:
+    def _review_text(rules: list) -> str:
         lines = [f"📋 <b>Подписка</b> ({len(rules)}/{MAX_RULES}):"]
         for i, rule in enumerate(rules, 1):
             lines.append(f"  {i}. {rule_display(rule)}")
         return "\n".join(lines)
+
+    def _welcome_text() -> str:
+        stats = get_stats()
+        return (
+            f"👋 <b>Конструктор подписок</b>\n\n"
+            f"Доступно нод: <b>{stats['total']}</b>\n\n"
+            f"Соберите подписку из нескольких правил (до {MAX_RULES}).\n"
+            f"Правило 1/{MAX_RULES} — выберите протокол:"
+        )
+
+    async def _show_start(target, edit: bool = False):
+        """Показать стартовый экран. target — message; edit=True → edit_text, иначе answer."""
+        sessions.pop(target.chat.id, None)
+        text, kb = _welcome_text(), protocol_keyboard()
+        if edit:
+            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
     # ---------- keyboards ----------
 
     def protocol_keyboard():
         stats = get_stats()
         available = stats["byProtocol"]
+        total = sum(available.values())
         rows, row = [], []
-        for proto in ["vless", "vmess", "trojan", "ss", "hysteria2"]:
+
+        # Кнопка «Все протоколы»
+        row.append(InlineKeyboardButton(text=f"🌐 Все ({total})", callback_data="p:all"))
+
+        for proto in PROTO_ORDER:
             cnt = available.get(proto, 0)
             if cnt == 0:
                 continue
             row.append(InlineKeyboardButton(
-                text=f"{PROTOCOL_LABELS[proto]} ({cnt})",
-                callback_data=f"p:{proto}"
+                text=f"{PROTOCOL_LABELS[proto]} ({cnt})", callback_data=f"p:{proto}"
             ))
             if len(row) == 2:
                 rows.append(row)
@@ -507,22 +463,17 @@ if CONFIG["BOT_TOKEN"]:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str, page: int = 0):
-        stats = get_stats(protocol)
-        by_country = stats["byCountry"]
-        entries = sorted(by_country.items(), key=lambda x: -x[1])
-
+        entries = sorted(get_stats(protocol)["byCountry"].items(), key=lambda x: -x[1])
         total_pages = max(1, (len(entries) + COUNTRIES_PER_PAGE - 1) // COUNTRIES_PER_PAGE)
         page = max(0, min(page, total_pages - 1))
-
-        start = page * COUNTRIES_PER_PAGE
-        page_entries = entries[start:start + COUNTRIES_PER_PAGE]
+        page_entries = entries[page * COUNTRIES_PER_PAGE:(page + 1) * COUNTRIES_PER_PAGE]
 
         rows = [[InlineKeyboardButton(text="🌍 Любая страна", callback_data="c:all")]]
         row = []
         for code, n in page_entries:
             row.append(InlineKeyboardButton(
                 text=f"{get_flag_emoji(code)} {code_to_name(code)} ({n})",
-                callback_data=f"c:{code}"
+                callback_data=f"c:{code}",
             ))
             if len(row) == 2:
                 rows.append(row)
@@ -530,16 +481,13 @@ if CONFIG["BOT_TOKEN"]:
         if row:
             rows.append(row)
 
-        nav_row = []
+        nav = []
         if page > 0:
-            nav_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"cp:{page - 1}"))
-        nav_row.append(InlineKeyboardButton(
-            text=f"{page + 1}/{total_pages}", callback_data="noop"
-        ))
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cp:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton(text="Ещё ▶️", callback_data=f"cp:{page + 1}"))
-        rows.append(nav_row)
-
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cp:{page + 1}"))
+        rows.append(nav)
         rows.append([InlineKeyboardButton(text="⏪ К протоколу", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -547,8 +495,7 @@ if CONFIG["BOT_TOKEN"]:
         rows, row = [], []
         for c in COUNT_OPTIONS:
             row.append(InlineKeyboardButton(
-                text="Все" if c == 0 else str(c),
-                callback_data=f"n:{c}"
+                text="Все" if c == 0 else str(c), callback_data=f"n:{c}"
             ))
             if len(row) == 3:
                 rows.append(row)
@@ -558,14 +505,14 @@ if CONFIG["BOT_TOKEN"]:
         rows.append([InlineKeyboardButton(text="⏪ К стране", callback_data="back:country")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def review_keyboard(rules_count: int) -> InlineKeyboardMarkup:
+    def review_keyboard(n: int) -> InlineKeyboardMarkup:
         rows = []
         row = []
-        if rules_count < MAX_RULES:
+        if n < MAX_RULES:
             row.append(InlineKeyboardButton(text="➕ Ещё", callback_data="add"))
         row.append(InlineKeyboardButton(text="🔗 Создать", callback_data="generate"))
         rows.append(row)
-        if rules_count > 0:
+        if n > 0:
             rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove")])
         rows.append([InlineKeyboardButton(text="⏪ Заново", callback_data="restart")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -591,70 +538,56 @@ if CONFIG["BOT_TOKEN"]:
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-            ]])
+            ]]),
         )
 
     # ---------- handlers ----------
 
     @dp.message(Command("start"))
     async def cmd_start(message: types.Message):
-        sessions.pop(message.chat.id, None)
-        stats = get_stats()
-        await message.answer(
-            f"👋 <b>Конструктор подписок</b>\n\n"
-            f"Доступно нод: <b>{stats['total']}</b>\n\n"
-            f"Соберите подписку из нескольких правил (до {MAX_RULES}).\n"
-            f"Правило {1}/{MAX_RULES} — выберите протокол:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard()
-        )
+        await _show_start(message, edit=False)
 
     @dp.callback_query(F.data.startswith("p:"))
     async def cb_protocol(query: types.CallbackQuery):
         protocol = query.data.split(":")[1]
-        sel = sessions.setdefault(query.message.chat.id, {"rules": [], "current": {}})
+        sel = _sess(query.message.chat.id)
         sel["current"] = {"protocol": protocol}
-        stats = get_stats(protocol)
-        total_countries = len(stats["byCountry"])
-        rule_num = len(sel["rules"]) + 1
+        rule_num = _rule_num(query.message.chat.id)
+        total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
             f"🔌 Правило {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну ({total_countries} стран):",
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(protocol)
+            reply_markup=country_keyboard(protocol),
         )
         await query.answer()
 
     @dp.callback_query(F.data.startswith("c:"))
     async def cb_country(query: types.CallbackQuery):
         country = query.data.split(":")[1]
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        if "current" not in sel:
-            sel["current"] = {}
+        sel = _sess(query.message.chat.id)
         sel["current"]["country"] = country
+        proto = sel["current"].get("protocol", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
-        proto = sel["current"].get("protocol", "")
         await query.message.edit_text(
-            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
-            f"Выберите количество:",
+            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\nВыберите количество:",
             parse_mode=ParseMode.HTML,
-            reply_markup=count_keyboard()
+            reply_markup=count_keyboard(),
         )
         await query.answer()
 
     @dp.callback_query(F.data.startswith("cp:"))
     async def cb_country_page(query: types.CallbackQuery):
         page = int(query.data.split(":")[1])
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        protocol = sel.get("current", {}).get("protocol", "vless")
-        rule_num = len(sel.get("rules", [])) + 1
+        sel = _sess(query.message.chat.id)
+        protocol = sel.get("current", {}).get("protocol", "all")
+        rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"🔌 Правило {rule_num}/{MAX_RULES}: "
-            f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
-            f"Выберите страну:",
+            f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\nВыберите страну:",
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(protocol, page)
+            reply_markup=country_keyboard(protocol, page),
         )
         await query.answer()
 
@@ -665,114 +598,100 @@ if CONFIG["BOT_TOKEN"]:
     @dp.callback_query(F.data.startswith("n:"))
     async def cb_count(query: types.CallbackQuery):
         count = int(query.data.split(":")[1])
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        current = sel.get("current", {})
-
-        # Finalize rule
-        rule = {
-            "protocol": current.get("protocol", "vless"),
-            "country": current.get("country", "all"),
+        sel = _sess(query.message.chat.id)
+        sel["rules"].append({
+            "protocol": sel["current"].get("protocol", "all"),
+            "country": sel["current"].get("country", "all"),
             "count": count,
-        }
-        if "rules" not in sel:
-            sel["rules"] = []
-        sel["rules"].append(rule)
+        })
         sel["current"] = {}
-
         rules = sel["rules"]
         await query.message.edit_text(
-            review_text(rules),
-            parse_mode=ParseMode.HTML,
-            reply_markup=review_keyboard(len(rules))
+            _review_text(rules), parse_mode=ParseMode.HTML,
+            reply_markup=review_keyboard(len(rules)),
         )
         await query.answer()
 
     @dp.callback_query(F.data == "add")
     async def cb_add(query: types.CallbackQuery):
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        rule_num = len(sel.get("rules", [])) + 1
+        rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"➕ Правило {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard()
+            reply_markup=protocol_keyboard(),
         )
         await query.answer()
 
     @dp.callback_query(F.data == "remove")
     async def cb_remove(query: types.CallbackQuery):
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        rules = sel.get("rules", [])
-        if rules:
-            rules.pop()
+        sel = _sess(query.message.chat.id)
+        if sel["rules"]:
+            sel["rules"].pop()
+        rules = sel["rules"]
         if not rules:
             await query.message.edit_text(
                 "📋 Список пуст. Начните заново:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="🔄 Начать", callback_data="restart")
-                ]])
+                ]]),
             )
         else:
             await query.message.edit_text(
-                review_text(rules),
-                parse_mode=ParseMode.HTML,
-                reply_markup=review_keyboard(len(rules))
+                _review_text(rules), parse_mode=ParseMode.HTML,
+                reply_markup=review_keyboard(len(rules)),
             )
         await query.answer()
 
     @dp.callback_query(F.data == "generate")
     async def cb_generate(query: types.CallbackQuery):
-        sel = sessions.get(query.message.chat.id, {})
-        rules = sel.get("rules", [])
+        rules = _sess(query.message.chat.id)["rules"]
         if not rules:
             await query.answer("❌ Нет правил")
             return
         await query.answer("Генерирую...")
         try:
             await query.message.delete()
-        except:
+        except Exception:
             pass
         await send_result(query.message.chat.id, rules)
         sessions.pop(query.message.chat.id, None)
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
-        sessions.pop(query.message.chat.id, None)
-        stats = get_stats()
-        await query.message.answer(
-            f"👋 <b>Конструктор подписок</b>\n\n"
-            f"Доступно нод: <b>{stats['total']}</b>\n\n"
-            f"Соберите подписку из нескольких правил (до {MAX_RULES}).\n"
-            f"Правило 1/{MAX_RULES} — выберите протокол:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard()
-        )
+        # Пытаемся edit (текстовое сообщение), иначе delete + answer (фото)
+        try:
+            await _show_start(query.message, edit=True)
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await _show_start(query.message, edit=False)
         await query.answer()
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        rule_num = len(sel.get("rules", [])) + 1
+        rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"➕ Правило {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard()
+            reply_markup=protocol_keyboard(),
         )
         await query.answer()
 
     @dp.callback_query(F.data == "back:country")
     async def cb_back_country(query: types.CallbackQuery):
-        sel = sessions.get(query.message.chat.id, {"rules": [], "current": {}})
-        protocol = sel.get("current", {}).get("protocol", "vless")
-        stats = get_stats(protocol)
-        total_countries = len(stats["byCountry"])
-        rule_num = len(sel.get("rules", [])) + 1
+        sel = _sess(query.message.chat.id)
+        protocol = sel.get("current", {}).get("protocol", "all")
+        rule_num = _rule_num(query.message.chat.id)
+        total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
             f"🔌 Правило {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну ({total_countries} стран):",
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(protocol)
+            reply_markup=country_keyboard(protocol),
         )
         await query.answer()
 
