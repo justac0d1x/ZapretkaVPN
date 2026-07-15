@@ -118,7 +118,8 @@ def make_telegram_qr(
     matrix = qr.get_matrix()
     n = len(matrix)
 
-    scale, cell = 4, box_size * scale
+    scale = 4
+    cell = box_size * scale
     offset, side = border * cell, (n + border * 2) * cell
 
     mask = Image.new("L", (side, side), 0)
@@ -439,7 +440,7 @@ if CONFIG["BOT_TOKEN"]:
 
     # ---------- keyboards ----------
 
-    def protocol_keyboard():
+    def protocol_keyboard(existing_rules: int = 0):
         stats = get_stats()
         available = stats["byProtocol"]
         total = sum(available.values())
@@ -457,6 +458,8 @@ if CONFIG["BOT_TOKEN"]:
                 row = []
         if row:
             rows.append(row)
+        if existing_rules > 0:
+            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:review")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str, page: int = 0):
@@ -555,7 +558,7 @@ if CONFIG["BOT_TOKEN"]:
         await query.message.edit_text(
             f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
-            f"Выберите страну ({total_countries} стран):",
+            f"Выберите страну:",
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol),
         )
@@ -612,11 +615,12 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "add")
     async def cb_add(query: types.CallbackQuery):
+        sel = _sess(query.message.chat.id)
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard(),
+            reply_markup=protocol_keyboard(len(sel["rules"])),
         )
         await query.answer()
 
@@ -648,12 +652,32 @@ if CONFIG["BOT_TOKEN"]:
             await query.answer("❌ Нет групп")
             return
         await query.answer("Генерирую...")
+        chat_id = query.message.chat.id
         try:
             await query.message.delete()
         except Exception:
             pass
-        await send_result(query.message.chat.id, rules)
-        sessions.pop(query.message.chat.id, None)
+        try:
+            await send_result(chat_id, rules)
+        except Exception as e:
+            print(f"❌ Ошибка генерации QR: {e}")
+            # Фолбэк: отправляем только текст
+            spec = build_compact_spec(rules)
+            url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{spec}"
+            rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"✅ <b>Подписка готова</b>\n\n{rules_text}\n\n"
+                    f"🔗 <code>{url}</code>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
+                    ]]),
+                )
+            except Exception as e2:
+                print(f"❌ Ошибка отправки фолбэка: {e2}")
+        sessions.pop(chat_id, None)
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
@@ -670,11 +694,12 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
+        sel = _sess(query.message.chat.id)
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard(),
+            reply_markup=protocol_keyboard(len(sel["rules"])),
         )
         await query.answer()
 
@@ -687,7 +712,7 @@ if CONFIG["BOT_TOKEN"]:
         await query.message.edit_text(
             f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
-            f"Выберите страну ({total_countries} стран):",
+            f"Выберите страну:",
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol),
         )
