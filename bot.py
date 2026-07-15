@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ZapretkaVPN Bot — конструктор кастомных подписок.
-До 5 правил (протокол + страна + количество) в одной подписке.
+До 5 групп (протокол + страна + количество) в одной подписке.
 Компактный формат URL: /sub/vRU5:tNL3:sUS10
 """
 
@@ -424,8 +424,8 @@ if CONFIG["BOT_TOKEN"]:
         return (
             f"👋 <b>Конструктор подписок</b>\n\n"
             f"Доступно нод: <b>{stats['total']}</b>\n\n"
-            f"Соберите подписку из нескольких правил (до {MAX_RULES}).\n"
-            f"Правило 1/{MAX_RULES} — выберите протокол:"
+            f"Соберите подписку из нескольких групп (до {MAX_RULES}).\n"
+            f"Группа 1/{MAX_RULES} — выберите протокол:"
         )
 
     async def _show_start(target, edit: bool = False):
@@ -443,11 +443,8 @@ if CONFIG["BOT_TOKEN"]:
         stats = get_stats()
         available = stats["byProtocol"]
         total = sum(available.values())
-        rows, row = [], []
-
-        # Кнопка «Все протоколы»
-        row.append(InlineKeyboardButton(text=f"🌐 Все ({total})", callback_data="p:all"))
-
+        rows = [[InlineKeyboardButton(text=f"🌐 Все протоколы ({total})", callback_data="p:all")]]
+        row = []
         for proto in PROTO_ORDER:
             cnt = available.get(proto, 0)
             if cnt == 0:
@@ -488,7 +485,7 @@ if CONFIG["BOT_TOKEN"]:
         if page < total_pages - 1:
             nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cp:{page + 1}"))
         rows.append(nav)
-        rows.append([InlineKeyboardButton(text="⏪ К протоколу", callback_data="back:protocol")])
+        rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def count_keyboard():
@@ -502,7 +499,7 @@ if CONFIG["BOT_TOKEN"]:
                 row = []
         if row:
             rows.append(row)
-        rows.append([InlineKeyboardButton(text="⏪ К стране", callback_data="back:country")])
+        rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:country")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def review_keyboard(n: int) -> InlineKeyboardMarkup:
@@ -514,7 +511,8 @@ if CONFIG["BOT_TOKEN"]:
         rows.append(row)
         if n > 0:
             rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove")])
-        rows.append([InlineKeyboardButton(text="⏪ Заново", callback_data="restart")])
+        if n > 1:
+            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:review")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     # ---------- send result ----------
@@ -555,7 +553,7 @@ if CONFIG["BOT_TOKEN"]:
         rule_num = _rule_num(query.message.chat.id)
         total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
-            f"🔌 Правило {rule_num}/{MAX_RULES}: "
+            f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну ({total_countries} стран):",
             parse_mode=ParseMode.HTML,
@@ -584,7 +582,7 @@ if CONFIG["BOT_TOKEN"]:
         protocol = sel.get("current", {}).get("protocol", "all")
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
-            f"🔌 Правило {rule_num}/{MAX_RULES}: "
+            f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\nВыберите страну:",
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol, page),
@@ -616,7 +614,7 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_add(query: types.CallbackQuery):
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
-            f"➕ Правило {rule_num}/{MAX_RULES} — выберите протокол:",
+            f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
             reply_markup=protocol_keyboard(),
         )
@@ -647,7 +645,7 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_generate(query: types.CallbackQuery):
         rules = _sess(query.message.chat.id)["rules"]
         if not rules:
-            await query.answer("❌ Нет правил")
+            await query.answer("❌ Нет групп")
             return
         await query.answer("Генерирую...")
         try:
@@ -674,7 +672,7 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_back_protocol(query: types.CallbackQuery):
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
-            f"➕ Правило {rule_num}/{MAX_RULES} — выберите протокол:",
+            f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
             parse_mode=ParseMode.HTML,
             reply_markup=protocol_keyboard(),
         )
@@ -687,12 +685,25 @@ if CONFIG["BOT_TOKEN"]:
         rule_num = _rule_num(query.message.chat.id)
         total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
-            f"🔌 Правило {rule_num}/{MAX_RULES}: "
+            f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну ({total_countries} стран):",
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol),
         )
+        await query.answer()
+
+    @dp.callback_query(F.data == "back:review")
+    async def cb_back_review(query: types.CallbackQuery):
+        sel = _sess(query.message.chat.id)
+        rules = sel.get("rules", [])
+        if not rules:
+            await _show_start(query.message, edit=True)
+        else:
+            await query.message.edit_text(
+                _review_text(rules), parse_mode=ParseMode.HTML,
+                reply_markup=review_keyboard(len(rules)),
+            )
         await query.answer()
 
 
