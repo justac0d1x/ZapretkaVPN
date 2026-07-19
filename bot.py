@@ -476,12 +476,14 @@ if CONFIG["BOT_TOKEN"]:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str, page: int = 0):
-        entries = sorted(get_stats(protocol)["byCountry"].items(), key=lambda x: -x[1])
+        stats = get_stats(protocol)
+        entries = sorted(stats["byCountry"].items(), key=lambda x: -x[1])
         total_pages = max(1, (len(entries) + COUNTRIES_PER_PAGE - 1) // COUNTRIES_PER_PAGE)
         page = max(0, min(page, total_pages - 1))
         page_entries = entries[page * COUNTRIES_PER_PAGE:(page + 1) * COUNTRIES_PER_PAGE]
 
-        rows = [[InlineKeyboardButton(text="🌍 Любая страна", callback_data="c:all")]]
+        total_nodes = stats["total"]
+        rows = [[InlineKeyboardButton(text=f"🌍 Любая страна ({total_nodes})", callback_data="c:all")]]
         row = []
         for code, n in page_entries:
             row.append(InlineKeyboardButton(
@@ -504,18 +506,29 @@ if CONFIG["BOT_TOKEN"]:
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def count_keyboard():
-        rows, row = [], []
-        for c in COUNT_OPTIONS:
-            row.append(InlineKeyboardButton(
-                text="Все" if c == 0 else str(c), callback_data=f"n:{c}"
-            ))
-            if len(row) == 3:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
+    def count_keyboard(protocol: str, current: int = 10):
+        """Красивый селектор количества с + / -"""
+        total = get_stats(protocol)["total"]
+
+        rows = []
+
+        # Верхняя строка: -   текущее   +
+        row = [
+            InlineKeyboardButton(text="➖", callback_data="count:dec"),
+            InlineKeyboardButton(text=f"📦 {current}", callback_data="noop"),
+            InlineKeyboardButton(text="➕", callback_data="count:inc"),
+        ]
+        rows.append(row)
+
+        # Кнопка "Все"
+        rows.append([InlineKeyboardButton(text=f"🌍 Все ({total})", callback_data="count:all")])
+
+        # Кнопка подтверждения
+        rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
+
+        # Назад
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:country")])
+
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def review_keyboard(n: int) -> InlineKeyboardMarkup:
@@ -602,10 +615,15 @@ if CONFIG["BOT_TOKEN"]:
         sel["current"]["country"] = country
         proto = sel["current"].get("protocol", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
+
+        # Сохраняем текущее количество (по умолчанию 10)
+        current_count = sel["current"].get("count", 10)
+
         await query.message.edit_text(
-            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\nВыберите количество:",
+            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
+            f"Выберите количество:",
             parse_mode=ParseMode.HTML,
-            reply_markup=count_keyboard(),
+            reply_markup=count_keyboard(proto, current_count),
         )
         await query.answer()
 
@@ -628,20 +646,48 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_noop(query: types.CallbackQuery):
         await query.answer()
 
-    @dp.callback_query(F.data.startswith("n:"))
-    async def cb_count(query: types.CallbackQuery):
-        count = int(query.data.split(":")[1])
+    # ==================== ИНТЕРАКТИВНЫЙ ВЫБОР КОЛИЧЕСТВА ====================
+    @dp.callback_query(F.data.startswith("count:"))
+    async def cb_count_interactive(query: types.CallbackQuery):
         sel = _sess(query.message.chat.id)
-        sel["rules"].append({
-            "protocol": sel["current"].get("protocol", "all"),
-            "country": sel["current"].get("country", "all"),
-            "count": count,
-        })
-        sel["current"] = {}
-        rules = sel["rules"]
+        proto = sel["current"].get("protocol", "all")
+        current = sel["current"].get("count", 10)
+
+        data = query.data.split(":")[1]
+
+        if data == "inc":
+            current = min(current + 5, 100)
+        elif data == "dec":
+            current = max(current - 5, 0)
+        elif data == "all":
+            current = 0
+        elif data == "confirm":
+            # Сохраняем и переходим к обзору
+            sel["rules"].append({
+                "protocol": proto,
+                "country": sel["current"].get("country", "all"),
+                "count": current,
+            })
+            sel["current"] = {}
+            rules = sel["rules"]
+            await query.message.edit_text(
+                _review_text(rules), parse_mode=ParseMode.HTML,
+                reply_markup=review_keyboard(len(rules)),
+            )
+            await query.answer()
+            return
+
+        # Обновляем текущее значение
+        sel["current"]["count"] = current
+
+        country = sel["current"].get("country", "all")
+        country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
+
         await query.message.edit_text(
-            _review_text(rules), parse_mode=ParseMode.HTML,
-            reply_markup=review_keyboard(len(rules)),
+            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
+            f"Выберите количество:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=count_keyboard(proto, current),
         )
         await query.answer()
 
