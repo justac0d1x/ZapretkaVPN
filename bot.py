@@ -620,6 +620,7 @@ if CONFIG["BOT_TOKEN"]:
         country = query.data.split(":")[1]
         sel = _sess(query.message.chat.id)
         sel["current"]["country"] = country
+        sel["current"]["count"] = 1                    # ← Сбрасываем счётчик при выборе новой страны
         proto = sel["current"].get("protocol", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
@@ -670,10 +671,13 @@ if CONFIG["BOT_TOKEN"]:
 
         data = query.data.split(":")[1]
 
+        # Умный шаг: 1 при ≤5, 5 при >5
+        step = 5 if current > 5 else 1
+
         if data == "inc":
-            current = min(current + 1, max_available)
+            current = min(current + step, max_available)
         elif data == "dec":
-            current = max(current - 1, min_count)
+            current = max(current - step, min_count)
         elif data == "all":
             current = max_available
         elif data == "confirm":
