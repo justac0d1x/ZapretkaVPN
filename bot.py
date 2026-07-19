@@ -436,7 +436,7 @@ if CONFIG["BOT_TOKEN"]:
 
     def welcome_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать конструктор", callback_data="start_constructor")]
+            [InlineKeyboardButton(text="🚀 Начать", callback_data="start_constructor")]
         ])
 
     async def _show_welcome(target, edit: bool = False):
@@ -566,7 +566,7 @@ if CONFIG["BOT_TOKEN"]:
         """Единая функция показа экрана выбора протокола"""
         rule_num = _rule_num(chat_id)
         rules_count = len(_sess(chat_id)["rules"])
-        text = f"Группа {rule_num}/{MAX_RULES} — выберите протокол:"
+        text = f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:"
         kb = protocol_keyboard(rules_count)
 
         if edit:
