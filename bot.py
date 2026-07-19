@@ -686,7 +686,8 @@ if CONFIG["BOT_TOKEN"]:
             if current <= 5:
                 current = max(current - 1, min_count)
             else:
-                current = max(current - 5, 5)
+                # Отматываем к ближайшему меньшему кратному 5
+                current = max(((current - 1) // 5) * 5, 5)
 
         # Защита: никогда не оставляем значения 6,7,8,9
         if 5 < current < 10:
