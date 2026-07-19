@@ -29,7 +29,7 @@ from io import BytesIO
 # ==================== CONFIG ====================
 CONFIG = {
     "SERVICE_NAME": os.getenv("SERVICE_NAME", "Zapretka"),
-    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.1.0-py"),
+    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.2.0-py"),
     "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
@@ -420,7 +420,37 @@ if CONFIG["BOT_TOKEN"]:
             lines.append(f"  {i}. {rule_display(rule)}")
         return "\n".join(lines)
 
+    # ==================== НОВОЕ ПРИВЕТСТВИЕ ====================
     def _welcome_text() -> str:
+        stats = get_stats()
+        return (
+            f"👋 <b>Добро пожаловать в Zapretka!</b>\n\n"
+            f"Zapretka — это удобный конструктор персональных VPN-подписок.\n\n"
+            f"🔹 <b>Что можно сделать:</b>\n"
+            f"• Собрать подписку из нескольких групп серверов (до {MAX_RULES})\n"
+            f"• Выбрать протокол, страну и количество серверов\n"
+            f"• Получить красивую ссылку + QR-код\n\n"
+            f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов\n\n"
+            f"Готовы начать?"
+        )
+
+    def welcome_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Начать конструктор", callback_data="start_constructor")]
+        ])
+
+    async def _show_welcome(target, edit: bool = False):
+        """Показывает красивое приветственное сообщение"""
+        sessions.pop(target.chat.id, None)
+        text = _welcome_text()
+        kb = welcome_keyboard()
+        if edit:
+            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    # ==================== СТАРЫЙ СТАРТ КОНСТРУКТОРА ====================
+    def _constructor_start_text() -> str:
         stats = get_stats()
         return (
             f"👋 <b>Конструктор подписок</b>\n\n"
@@ -430,9 +460,8 @@ if CONFIG["BOT_TOKEN"]:
         )
 
     async def _show_start(target, edit: bool = False):
-        """Показать стартовый экран. target — message; edit=True → edit_text, иначе answer."""
-        sessions.pop(target.chat.id, None)
-        text, kb = _welcome_text(), protocol_keyboard()
+        """Показать стартовый экран конструктора. target — message; edit=True → edit_text"""
+        text, kb = _constructor_start_text(), protocol_keyboard()
         if edit:
             await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         else:
@@ -451,7 +480,7 @@ if CONFIG["BOT_TOKEN"]:
             if cnt == 0:
                 continue
             row.append(InlineKeyboardButton(
-                text=f"{PROTOCOL_LABELS[proto]} ({cnt})", callback_data=f"p:{proto}"
+                text=f"{PROTOCOL_LABELS[proto]} ({cnt)}", callback_data=f"p:{proto}"
             ))
             if len(row) == 2:
                 rows.append(row)
@@ -546,7 +575,13 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.message(Command("start"))
     async def cmd_start(message: types.Message):
-        await _show_start(message, edit=False)
+        await _show_welcome(message, edit=False)
+
+    # Новая кнопка "Начать конструктор"
+    @dp.callback_query(F.data == "start_constructor")
+    async def cb_start_constructor(query: types.CallbackQuery):
+        await query.answer()
+        await _show_start(query.message, edit=True)
 
     @dp.callback_query(F.data.startswith("p:"))
     async def cb_protocol(query: types.CallbackQuery):
@@ -554,7 +589,6 @@ if CONFIG["BOT_TOKEN"]:
         sel = _sess(query.message.chat.id)
         sel["current"] = {"protocol": protocol}
         rule_num = _rule_num(query.message.chat.id)
-        total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
             f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
@@ -586,7 +620,8 @@ if CONFIG["BOT_TOKEN"]:
         rule_num = _rule_num(query.message.chat.id)
         await query.message.edit_text(
             f"🔌 Группа {rule_num}/{MAX_RULES}: "
-            f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\nВыберите страну:",
+            f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
+            f"Выберите страну:",
             parse_mode=ParseMode.HTML,
             reply_markup=country_keyboard(protocol, page),
         )
@@ -681,15 +716,15 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
-        # Пытаемся edit (текстовое сообщение), иначе delete + answer (фото)
+        # Возвращаем к приветствию (а не сразу к конструктору)
         try:
-            await _show_start(query.message, edit=True)
+            await _show_welcome(query.message, edit=True)
         except Exception:
             try:
                 await query.message.delete()
             except Exception:
                 pass
-            await _show_start(query.message, edit=False)
+            await _show_welcome(query.message, edit=False)
         await query.answer()
 
     @dp.callback_query(F.data == "back:protocol")
@@ -708,7 +743,6 @@ if CONFIG["BOT_TOKEN"]:
         sel = _sess(query.message.chat.id)
         protocol = sel.get("current", {}).get("protocol", "all")
         rule_num = _rule_num(query.message.chat.id)
-        total_countries = len(get_stats(protocol)["byCountry"])
         await query.message.edit_text(
             f"🔌 Группа {rule_num}/{MAX_RULES}: "
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
@@ -720,7 +754,6 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "back:review")
     async def cb_back_review(query: types.CallbackQuery):
-        # Не используется — оставлен как заглушка на случай старых callback'ов
         await _show_start(query.message, edit=True)
         await query.answer()
 
@@ -733,6 +766,7 @@ async def main():
 
     if dp and bot:
         print("🤖 Starting Telegram bot polling...")
+        import asyncio
         asyncio.create_task(dp.start_polling(bot))
 
     config = uvicorn.Config(app, host="0.0.0.0", port=CONFIG["PORT"])
