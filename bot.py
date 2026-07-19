@@ -671,13 +671,26 @@ if CONFIG["BOT_TOKEN"]:
 
         data = query.data.split(":")[1]
 
-        # Умный шаг: 1 при ≤5, 5 при >5
-        step = 5 if current > 5 else 1
+        # Умный шаг: 1 при <5, 5 при >=5
+        if current < 5:
+            step = 1
+        else:
+            step = 5
 
         if data == "inc":
-            current = min(current + step, max_available)
+            if current < 5:
+                current = min(current + 1, 5)
+            else:
+                current = min(current + 5, max_available)
         elif data == "dec":
-            current = max(current - step, min_count)
+            if current <= 5:
+                current = max(current - 1, min_count)
+            else:
+                current = max(current - 5, 5)
+
+        # Защита: никогда не оставляем значения 6,7,8,9
+        if 5 < current < 10:
+            current = 10 if data == "inc" else 5
         elif data == "all":
             current = max_available
         elif data == "confirm":
