@@ -361,6 +361,12 @@ def get_stats(protocol: str = "all"):
     return {"total": total, "byProtocol": by_protocol, "byCountry": by_country}
 
 
+def get_available_count(protocol: str, country: str) -> int:
+    """Возвращает реальное количество доступных нод для протокола + страны"""
+    filtered = filter_nodes(protocol, country)
+    return len(filtered)
+
+
 # ==================== FASTAPI ====================
 app = FastAPI(title=CONFIG["SERVICE_NAME"])
 
@@ -506,10 +512,8 @@ if CONFIG["BOT_TOKEN"]:
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def count_keyboard(protocol: str, current: int = 10):
+    def count_keyboard(protocol: str, country: str, current: int = 5, max_available: int = 0):
         """Красивый селектор количества с + / -"""
-        total = get_stats(protocol)["total"]
-
         rows = []
 
         # Верхняя строка: -   текущее   +
@@ -521,7 +525,8 @@ if CONFIG["BOT_TOKEN"]:
         rows.append(row)
 
         # Кнопка "Все"
-        rows.append([InlineKeyboardButton(text=f"🌍 Все ({total})", callback_data="count:all")])
+        all_text = f"🌍 Все ({max_available})" if max_available > 0 else "🌍 Все"
+        rows.append([InlineKeyboardButton(text=all_text, callback_data="count:all")])
 
         # Кнопка подтверждения
         rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
@@ -616,14 +621,14 @@ if CONFIG["BOT_TOKEN"]:
         proto = sel["current"].get("protocol", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
-        # Сохраняем текущее количество (по умолчанию 10)
-        current_count = sel["current"].get("count", 10)
+        max_available = get_available_count(proto, country)
+        current_count = max(5, min(sel["current"].get("count", 5), max_available))
 
         await query.message.edit_text(
             f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
             f"Выберите количество:",
             parse_mode=ParseMode.HTML,
-            reply_markup=count_keyboard(proto, current_count),
+            reply_markup=count_keyboard(proto, country, current_count, max_available),
         )
         await query.answer()
 
@@ -651,21 +656,24 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_count_interactive(query: types.CallbackQuery):
         sel = _sess(query.message.chat.id)
         proto = sel["current"].get("protocol", "all")
-        current = sel["current"].get("count", 10)
+        country = sel["current"].get("country", "all")
+
+        max_available = get_available_count(proto, country)
+        current = sel["current"].get("count", 5)
 
         data = query.data.split(":")[1]
 
         if data == "inc":
-            current = min(current + 5, 100)
+            current = min(current + 5, max_available)
         elif data == "dec":
-            current = max(current - 5, 0)
+            current = max(current - 5, 5)
         elif data == "all":
-            current = 0
+            current = max_available
         elif data == "confirm":
             # Сохраняем и переходим к обзору
             sel["rules"].append({
                 "protocol": proto,
-                "country": sel["current"].get("country", "all"),
+                "country": country,
                 "count": current,
             })
             sel["current"] = {}
@@ -680,14 +688,13 @@ if CONFIG["BOT_TOKEN"]:
         # Обновляем текущее значение
         sel["current"]["count"] = current
 
-        country = sel["current"].get("country", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
         await query.message.edit_text(
             f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
             f"Выберите количество:",
             parse_mode=ParseMode.HTML,
-            reply_markup=count_keyboard(proto, current),
+            reply_markup=count_keyboard(proto, country, current, max_available),
         )
         await query.answer()
 
