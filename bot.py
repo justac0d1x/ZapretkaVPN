@@ -449,23 +449,7 @@ if CONFIG["BOT_TOKEN"]:
         else:
             await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
-    # ==================== СТАРЫЙ СТАРТ КОНСТРУКТОРА ====================
-    def _constructor_start_text() -> str:
-        stats = get_stats()
-        return (
-            f"👋 <b>Конструктор подписок</b>\n\n"
-            f"Доступно нод: <b>{stats['total']}</b>\n\n"
-            f"Соберите подписку из нескольких групп (до {MAX_RULES}).\n"
-            f"Группа 1/{MAX_RULES} — выберите протокол:"
-        )
 
-    async def _show_start(target, edit: bool = False):
-        """Показать стартовый экран конструктора. target — message; edit=True → edit_text"""
-        text, kb = _constructor_start_text(), protocol_keyboard()
-        if edit:
-            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-        else:
-            await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
     # ---------- keyboards ----------
 
@@ -577,11 +561,24 @@ if CONFIG["BOT_TOKEN"]:
     async def cmd_start(message: types.Message):
         await _show_welcome(message, edit=False)
 
+    # ==================== ЕДИНАЯ ФУНКЦИЯ ВЫБОРА ПРОТОКОЛА ====================
+    async def show_protocol_selection(target, chat_id: int, edit: bool = False):
+        """Единая функция показа экрана выбора протокола"""
+        rule_num = _rule_num(chat_id)
+        rules_count = len(_sess(chat_id)["rules"])
+        text = f"Группа {rule_num}/{MAX_RULES} — выберите протокол:"
+        kb = protocol_keyboard(rules_count)
+
+        if edit:
+            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
     # Новая кнопка "Начать конструктор"
     @dp.callback_query(F.data == "start_constructor")
     async def cb_start_constructor(query: types.CallbackQuery):
         await query.answer()
-        await _show_start(query.message, edit=True)
+        await show_protocol_selection(query.message, query.message.chat.id, edit=True)
 
     @dp.callback_query(F.data.startswith("p:"))
     async def cb_protocol(query: types.CallbackQuery):
@@ -650,14 +647,8 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "add")
     async def cb_add(query: types.CallbackQuery):
-        sel = _sess(query.message.chat.id)
-        rule_num = _rule_num(query.message.chat.id)
-        await query.message.edit_text(
-            f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard(len(sel["rules"])),
-        )
         await query.answer()
+        await show_protocol_selection(query.message, query.message.chat.id, edit=True)
 
     @dp.callback_query(F.data == "remove")
     async def cb_remove(query: types.CallbackQuery):
@@ -729,14 +720,8 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
-        sel = _sess(query.message.chat.id)
-        rule_num = _rule_num(query.message.chat.id)
-        await query.message.edit_text(
-            f"➕ Группа {rule_num}/{MAX_RULES} — выберите протокол:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=protocol_keyboard(len(sel["rules"])),
-        )
         await query.answer()
+        await show_protocol_selection(query.message, query.message.chat.id, edit=True)
 
     @dp.callback_query(F.data == "back:country")
     async def cb_back_country(query: types.CallbackQuery):
@@ -754,7 +739,7 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "back:review")
     async def cb_back_review(query: types.CallbackQuery):
-        await _show_start(query.message, edit=True)
+        await show_protocol_selection(query.message, query.message.chat.id, edit=True)
         await query.answer()
 
 
