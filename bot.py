@@ -527,19 +527,33 @@ if CONFIG["BOT_TOKEN"]:
         rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
         caption = (
             f"✅ <b>Подписка готова</b>\n\n"
-            f"{rules_text}\n\n"
-            f"🔗 <code>{url}</code>"
+            f"{rules_text}"
         )
 
         buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
+
+        app_rows = []
+        row = []
+        for label, scheme in [("🟣 Hiddify", "hiddify://import/"), ("🟢 Happ", "happ://add/"), ("🔵 InCisy", "incy://add/")]:
+            row.append(InlineKeyboardButton(text=label, url=f"{scheme}{url}"))
+            if len(row) == 2:
+                app_rows.append(row)
+                row = []
+        if row:
+            app_rows.append(row)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Открыть ссылку", url=url)],
+            *app_rows,
+            [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
+        ])
+
         await bot.send_photo(
             chat_id,
             photo=BufferedInputFile(buf.getvalue(), filename="qr.png"),
             caption=caption,
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-            ]]),
+            reply_markup=kb,
         )
 
     # ---------- handlers ----------
@@ -666,14 +680,25 @@ if CONFIG["BOT_TOKEN"]:
             url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{spec}"
             rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
             try:
+                app_rows = []
+                row = []
+                for label, scheme in [("🟣 Hiddify", "hiddify://import/"), ("🟢 Happ", "happ://add/"), ("🔵 InCisy", "incy://add/")]:
+                    row.append(InlineKeyboardButton(text=label, url=f"{scheme}{url}"))
+                    if len(row) == 2:
+                        app_rows.append(row)
+                        row = []
+                if row:
+                    app_rows.append(row)
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔗 Открыть ссылку", url=url)],
+                    *app_rows,
+                    [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
+                ])
                 await bot.send_message(
                     chat_id,
-                    f"✅ <b>Подписка готова</b>\n\n{rules_text}\n\n"
-                    f"🔗 <code>{url}</code>",
+                    f"✅ <b>Подписка готова</b>\n\n{rules_text}",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-                    ]]),
+                    reply_markup=kb,
                 )
             except Exception as e2:
                 print(f"❌ Ошибка отправки фолбэка: {e2}")
