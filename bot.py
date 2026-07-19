@@ -480,7 +480,7 @@ if CONFIG["BOT_TOKEN"]:
             if cnt == 0:
                 continue
             row.append(InlineKeyboardButton(
-                text=f"{PROTOCOL_LABELS[proto]} ({cnt)}", callback_data=f"p:{proto}"
+                text=f"{PROTOCOL_LABELS[proto]} ({cnt})", callback_data=f"p:{proto}"
             ))
             if len(row) == 2:
                 rows.append(row)
