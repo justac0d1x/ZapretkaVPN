@@ -701,12 +701,17 @@ if CONFIG["BOT_TOKEN"]:
 
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
-        await query.message.edit_text(
-            f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
-            f"Выберите количество:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=count_keyboard(proto, country, current, max_available),
-        )
+        try:
+            await query.message.edit_text(
+                f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
+                f"Выберите количество:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=count_keyboard(proto, country, current, max_available),
+            )
+        except Exception:
+            # Игнорируем ошибку "message is not modified"
+            pass
+
         await query.answer()
 
     @dp.callback_query(F.data == "add")
