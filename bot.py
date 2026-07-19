@@ -512,8 +512,11 @@ if CONFIG["BOT_TOKEN"]:
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:protocol")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def count_keyboard(protocol: str, country: str, current: int = 5, max_available: int = 0):
+    def count_keyboard(protocol: str, country: str, current: int = 1, max_available: int = 0):
         """Красивый селектор количества с + / -"""
+        min_count = 1
+        current = max(min_count, min(current, max_available))
+
         rows = []
 
         # Верхняя строка: -   текущее   +
@@ -525,8 +528,7 @@ if CONFIG["BOT_TOKEN"]:
         rows.append(row)
 
         # Кнопка "Все"
-        all_text = f"🌍 Все ({max_available})" if max_available > 0 else "🌍 Все"
-        rows.append([InlineKeyboardButton(text=all_text, callback_data="count:all")])
+        rows.append([InlineKeyboardButton(text=f"🌍 Все ({max_available})", callback_data="count:all")])
 
         # Кнопка подтверждения
         rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
@@ -622,7 +624,7 @@ if CONFIG["BOT_TOKEN"]:
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
         max_available = get_available_count(proto, country)
-        current_count = max(5, min(sel["current"].get("count", 5), max_available))
+        current_count = max(1, min(sel["current"].get("count", 1), max_available))
 
         await query.message.edit_text(
             f"🔌 {PROTOCOL_LABELS.get(proto, proto)} · {country_display}\n\n"
@@ -659,14 +661,19 @@ if CONFIG["BOT_TOKEN"]:
         country = sel["current"].get("country", "all")
 
         max_available = get_available_count(proto, country)
-        current = sel["current"].get("count", 5)
+        if max_available == 0:
+            await query.answer("❌ Нет доступных нод", show_alert=True)
+            return
+
+        current = sel["current"].get("count", 1)
+        min_count = 1
 
         data = query.data.split(":")[1]
 
         if data == "inc":
-            current = min(current + 5, max_available)
+            current = min(current + 1, max_available)
         elif data == "dec":
-            current = max(current - 5, 5)
+            current = max(current - 1, min_count)
         elif data == "all":
             current = max_available
         elif data == "confirm":
