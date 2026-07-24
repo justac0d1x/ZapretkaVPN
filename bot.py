@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 import uvicorn
 
 from aiogram import Bot, Dispatcher, types, F
@@ -393,6 +393,36 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/redir/{client_path:path}")
+async def redirect_to_app(client_path: str):
+    """
+    Простой редиректор:
+    /redir/h;xxx   → Happ
+    /redir/i;xxx   → Incy
+    """
+    if ";" not in client_path:
+        return {"error": "invalid format. Use /redir/h;xxx or /redir/i;xxx"}
+
+    client_code, spec = client_path.split(";", 1)
+
+    if client_code == "h":
+        app_scheme = "happ"
+    elif client_code == "i":
+        app_scheme = "incy"
+    else:
+        return {"error": "unknown client (use h or i)"}
+
+    sub_url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{spec}"
+
+    try:
+        encoded = base64.urlsafe_b64encode(sub_url.encode()).decode().rstrip("=")
+    except Exception:
+        return {"error": "invalid spec"}
+
+    redirect_url = f"{app_scheme}://import/{encoded}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
 # ==================== TELEGRAM BOT ====================
 bot = None
 dp = None
@@ -565,14 +595,21 @@ if CONFIG["BOT_TOKEN"]:
         )
 
         buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
+
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📱 Happ", callback_data=f"import:happ:{spec}"),
+                InlineKeyboardButton(text="📱 Incy", callback_data=f"import:incy:{spec}"),
+            ],
+            [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")]
+        ])
+
         await bot.send_photo(
             chat_id,
             photo=BufferedInputFile(buf.getvalue(), filename="qr.png"),
             caption=caption,
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-            ]]),
+            reply_markup=markup,
         )
 
     # ---------- handlers ----------
@@ -599,6 +636,29 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_start_constructor(query: types.CallbackQuery):
         await query.answer()
         await show_protocol_selection(query.message, query.message.chat.id, edit=True)
+
+    @dp.callback_query(F.data.startswith("import:"))
+    async def cb_import_app(query: types.CallbackQuery):
+        _, client, spec = query.data.split(":", 2)
+
+        # Новый формат: /redir/h;xxx или /redir/i;xxx
+        if client == "happ":
+            path = f"h;{spec}"
+        else:
+            path = f"i;{spec}"
+
+        redirect_url = f"{CONFIG['BASE_URL'].rstrip('/')}/redir/{path}"
+
+        await query.answer()
+        try:
+            await query.message.reply(
+                f"Нажми, чтобы открыть подписку:\n\n"
+                f"[📱 Открыть в {client.upper()}]({redirect_url})",
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+        except Exception:
+            await query.message.reply(f"Ссылка: {redirect_url}")
 
     @dp.callback_query(F.data.startswith("p:"))
     async def cb_protocol(query: types.CallbackQuery):
@@ -790,16 +850,22 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
-        # Возвращаем к приветствию (а не сразу к конструктору)
-        try:
-            await _show_welcome(query.message, edit=True)
-        except Exception:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            await _show_welcome(query.message, edit=False)
+        sel = _sess(query.message.chat.id)
+        rules = sel.get("rules", [])
+
         await query.answer()
+
+        if rules:
+            # Есть собранные группы → возвращаемся к странице обзора
+            await query.message.edit_text(
+                _review_text(rules),
+                parse_mode=ParseMode.HTML,
+                reply_markup=review_keyboard(len(rules))
+            )
+        else:
+            # Нет групп → идём к выбору протокола
+            sessions.pop(query.message.chat.id, None)
+            await show_protocol_selection(query.message, query.message.chat.id, edit=True)
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
