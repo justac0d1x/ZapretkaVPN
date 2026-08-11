@@ -582,8 +582,9 @@ if CONFIG["BOT_TOKEN"]:
 
         rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
         caption = (
-            f"✅ <b>Подписка готова</b>\n\n"
-            f"{rules_text}"
+            f"<blockquote>Ваша подписка готова!</blockquote>\n\n"
+            f"{rules_text}\n\n"
+            f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b> или <b>INCY</b>."
         )
 
         buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
@@ -789,7 +790,9 @@ if CONFIG["BOT_TOKEN"]:
             try:
                 await bot.send_message(
                     chat_id,
-                    f"✅ <b>Подписка готова</b>\n\n{rules_text}",
+                    f"<blockquote>Ваша подписка готова!</blockquote>\n\n"
+                    f"{rules_text}\n\n"
+                    f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b> или <b>INCY</b>.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
