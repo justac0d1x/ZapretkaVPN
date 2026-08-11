@@ -598,7 +598,7 @@ if CONFIG["BOT_TOKEN"]:
             caption=caption,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔵 🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url), style="primary")],
                 [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
             ]),
         )
@@ -799,7 +799,7 @@ if CONFIG["BOT_TOKEN"]:
                     f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b>, <b>INCY</b> или <b>Hiddify</b>.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🔵 🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                        [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url), style="primary")],
                         [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
                     ]),
                 )
