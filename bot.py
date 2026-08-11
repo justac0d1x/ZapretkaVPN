@@ -21,7 +21,7 @@ from fastapi.responses import PlainTextResponse
 import uvicorn
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, CopyTextButton
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 import qrcode
@@ -468,7 +468,7 @@ if CONFIG["BOT_TOKEN"]:
             f"🔹 <b>Что можно сделать:</b>\n"
             f"• Собрать подписку из нескольких групп серверов (до {MAX_RULES})\n"
             f"• Выбрать протокол, страну и количество серверов\n"
-            f"• Получить короткую зашифрованную ссылку + QR-код\n\n"
+            f"• Получить красивую подписку + QR-код\n\n"
             f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов\n\n"
             f"Готовы начать?"
         )
@@ -583,8 +583,7 @@ if CONFIG["BOT_TOKEN"]:
         rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
         caption = (
             f"✅ <b>Подписка готова</b>\n\n"
-            f"{rules_text}\n\n"
-            f"🔗 <code>{url}</code>"
+            f"{rules_text}"
         )
 
         buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
@@ -593,9 +592,10 @@ if CONFIG["BOT_TOKEN"]:
             photo=BufferedInputFile(buf.getvalue(), filename="qr.png"),
             caption=caption,
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-            ]]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
+            ]),
         )
 
     # ---------- handlers ----------
@@ -789,12 +789,12 @@ if CONFIG["BOT_TOKEN"]:
             try:
                 await bot.send_message(
                     chat_id,
-                    f"✅ <b>Подписка готова</b>\n\n{rules_text}\n\n"
-                    f"🔗 <code>{url}</code>",
+                    f"✅ <b>Подписка готова</b>\n\n{rules_text}",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")
-                    ]]),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                        [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
+                    ]),
                 )
             except Exception as e2:
                 print(f"❌ Ошибка отправки фолбэка: {e2}")
