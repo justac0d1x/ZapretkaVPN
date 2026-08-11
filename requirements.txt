@@ -5,3 +5,4 @@ qrcode[pil]
 pillow
 python-dotenv
 httpx
+cryptography
