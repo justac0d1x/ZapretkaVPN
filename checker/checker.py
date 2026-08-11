@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Check proxy URIs with Xray Core and sing-box.
+"""Check proxy URIs with Xray Core and sing-box."""
 
-Supported: vless, vmess, trojan, ss/shadowsocks, hysteria2/hy2
-"""
 from __future__ import annotations
 
 import argparse
@@ -126,6 +124,7 @@ def b64decode_padded(data: str) -> bytes:
     data += "=" * (-len(data) % 4)
     return base64.b64decode(data)
 
+
 def qs_one(qs: dict[str, list[str]], *names: str, default: str | None = None) -> str | None:
     for n in names:
         v = qs.get(n)
@@ -133,13 +132,16 @@ def qs_one(qs: dict[str, list[str]], *names: str, default: str | None = None) ->
             return v[0]
     return default
 
+
 def as_bool(v: str | None) -> bool:
     return bool(v and v.lower() in {"1", "true", "yes", "y"})
+
 
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
 
 def node_name(uri: str, fallback: str) -> str:
     """Build a display name: ``{flag} {display_name}``.
@@ -204,8 +206,10 @@ def build_stream_settings(qs: dict[str, list[str]], fallback_host: str) -> dict[
 
     network_map = {"raw": "tcp", "xhttp": "splithttp", "h2": "http", "http": "http"}
     network = network_map.get(network, network)
-    if security == "false": security = "none"
-    if security == "true": security = "tls"
+    if security == "false":
+        security = "none"
+    if security == "true":
+        security = "tls"
 
     ss: dict[str, Any] = {"network": network, "security": security}
     server_name = qs_one(qs, "sni", "serverName", "peer", default=fallback_host)
@@ -243,21 +247,40 @@ def build_stream_settings(qs: dict[str, list[str]], fallback_host: str) -> dict[
 
 # ---------- outbounds: xray ----------
 def outbound_vless(uri: str) -> dict[str, Any]:
-    p = urlsplit(uri); qs = parse_qs(p.query)
-    user = {"id": unquote(p.username), "encryption": qs_one(qs, "encryption", default="none") or "none"}
-    if flow := qs_one(qs, "flow"): user["flow"] = flow
-    return {"protocol": "vless", "settings": {"vnext": [{"address": p.hostname, "port": int(p.port), "users": [user]}]}, "streamSettings": build_stream_settings(qs, p.hostname)}
+    p = urlsplit(uri)
+    qs = parse_qs(p.query)
+    user = {"id": unquote(p.username or ""), "encryption": qs_one(qs, "encryption", default="none") or "none"}
+    if flow := qs_one(qs, "flow"):
+        user["flow"] = flow
+    return {
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": p.hostname, "port": int(p.port or 443), "users": [user]}]},
+        "streamSettings": build_stream_settings(qs, p.hostname or ""),
+    }
+
 
 def outbound_trojan(uri: str) -> dict[str, Any]:
-    p = urlsplit(uri); qs = parse_qs(p.query)
-    return {"protocol": "trojan", "settings": {"servers": [{"address": p.hostname, "port": int(p.port), "password": unquote(p.username)}]}, "streamSettings": build_stream_settings(qs, p.hostname)}
+    p = urlsplit(uri)
+    qs = parse_qs(p.query)
+    return {
+        "protocol": "trojan",
+        "settings": {"servers": [{"address": p.hostname, "port": int(p.port or 443), "password": unquote(p.username or "")}]},
+        "streamSettings": build_stream_settings(qs, p.hostname or ""),
+    }
+
 
 def outbound_vmess(uri: str) -> dict[str, Any]:
     data = json.loads(b64decode_padded(uri[8:].split("#", 1)[0]).decode())
     host, port, uuid = data["add"], int(data["port"]), data["id"]
-    qs = {k: [str(data.get(v, ""))] for k, v in {"type":"net","security":"tls","sni":"sni","host":"host","path":"path","fp":"fp","alpn":"alpn"}.items() if data.get(v)}
-    qs.setdefault("type", ["tcp"]); qs.setdefault("security", ["none"])
-    return {"protocol": "vmess", "settings": {"vnext": [{"address": host, "port": port, "users": [{"id": uuid, "alterId": int(data.get("aid", 0) or 0), "security": data.get("scy", "auto")}]}]}, "streamSettings": build_stream_settings(qs, host)}
+    qs = {k: [str(data.get(v, ""))] for k, v in {"type": "net", "security": "tls", "sni": "sni", "host": "host", "path": "path", "fp": "fp", "alpn": "alpn"}.items() if data.get(v)}
+    qs.setdefault("type", ["tcp"])
+    qs.setdefault("security", ["none"])
+    return {
+        "protocol": "vmess",
+        "settings": {"vnext": [{"address": host, "port": port, "users": [{"id": uuid, "alterId": int(data.get("aid", 0) or 0), "security": data.get("scy", "auto")}]}]},
+        "streamSettings": build_stream_settings(qs, host),
+    }
+
 
 def outbound_ss(uri: str) -> dict[str, Any]:
     scheme = "shadowsocks://" if uri.startswith("shadowsocks://") else "ss://"
@@ -272,16 +295,19 @@ def outbound_ss(uri: str) -> dict[str, Any]:
     host = host.strip("[]")
     return {"protocol": "shadowsocks", "settings": {"servers": [{"address": host, "port": int(port_str), "method": method, "password": password}]}}
 
+
 def xray_outbound(uri: str) -> tuple[str, dict[str, Any]]:
     scheme = urlsplit(uri).scheme.lower()
     builders = {"vless": outbound_vless, "vmess": outbound_vmess, "trojan": outbound_trojan, "ss": outbound_ss, "shadowsocks": outbound_ss}
-    if scheme in builders: return scheme, builders[scheme](uri)
+    if scheme in builders:
+        return scheme, builders[scheme](uri)
     raise ValueError(f"unsupported scheme: {scheme}")
 
 
 # ---------- outbounds: sing-box / hysteria2 ----------
 def hysteria2_outbound(uri: str) -> dict[str, Any]:
-    p = urlsplit(uri); qs = parse_qs(p.query)
+    p = urlsplit(uri)
+    qs = parse_qs(p.query)
     ob = {
         "type": "hysteria2",
         "server": p.hostname,
@@ -320,7 +346,8 @@ class ProxyRunner:
             bin_path = SINGBOX_BIN
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(cfg, f); self.cfg_path = f.name
+            json.dump(cfg, f)
+            self.cfg_path = f.name
 
         self.proc = subprocess.Popen([bin_path, "run", "-c", self.cfg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.port = port
@@ -329,9 +356,11 @@ class ProxyRunner:
         deadline = time.time() + 6
         while time.time() < deadline:
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.3): break
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                    break
             except OSError:
-                if self.proc.poll() is not None: raise RuntimeError(f"{bin_path} exited early")
+                if self.proc.poll() is not None:
+                    raise RuntimeError(f"{bin_path} exited early")
                 time.sleep(0.1)
         else:
             raise TimeoutError("proxy did not start")
@@ -340,9 +369,12 @@ class ProxyRunner:
     def __exit__(self, *exc):
         if self.proc:
             self.proc.terminate()
-            try: self.proc.wait(timeout=2)
-            except: self.proc.kill()
-        with contextlib.suppress(Exception): os.unlink(self.cfg_path)
+            try:
+                self.proc.wait(timeout=2)
+            except Exception:
+                self.proc.kill()
+        with contextlib.suppress(Exception):
+            os.unlink(self.cfg_path)
 
 
 def test_via_socks(port: int, test_url: str, timeout: float) -> tuple[int, int]:
@@ -382,7 +414,8 @@ def extract_proxy_links(text: str) -> list[str]:
 
     candidates = []
     for line in text.splitlines():
-        if n := normalize(line): candidates.append(n)
+        if n := normalize(line):
+            candidates.append(n)
     candidates += [n for m in PROXY_LINK_RE.findall(text) if (n := normalize(m))]
 
     # try base64 subscription decode
@@ -395,13 +428,18 @@ def extract_proxy_links(text: str) -> list[str]:
     # dedupe preserve order
     seen, out = set(), []
     for c in candidates:
-        if c not in seen: seen.add(c); out.append(c)
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
     return out
+
 
 def env_lines(name: str) -> list[str]:
     value = os.environ.get(name, "").strip()
-    if not value: return []
+    if not value:
+        return []
     return [l.strip() for l in value.splitlines() if l.strip() and not l.strip().startswith("#")]
+
 
 def fetch_subscription(url: str, user_agent: str, timeout: float, proxies: dict[str, str] | None = None) -> str:
     headers = {
@@ -431,64 +469,126 @@ def fetch_subscription(url: str, user_agent: str, timeout: float, proxies: dict[
             print(f"  ↳ all {retries+1} attempts failed: {type(exc).__name__}", flush=True)
             raise last_exc  # type: ignore
 
+
 @contextlib.contextmanager
-def subscription_proxy(uri: str):
-    """Запускает xray прокси для скачивания подписок, возвращает dict proxies для requests"""
-    scheme, outbound = xray_outbound(uri)
-    with ProxyRunner("xray", outbound) as port:
+def subscription_proxy(uri: str | None):
+    """Context manager providing requests-compatible proxy dict.
+
+    If uri is empty/None or disabled ('none', 'null', 'false', '0'), yields None (direct connection).
+    Supports:
+      - Direct HTTP/HTTPS/SOCKS proxies (http://, https://, socks5://, socks5h://)
+      - Sing-box protocols (hysteria2://, hy2://)
+      - Xray protocols (vless://, vmess://, trojan://, ss://, shadowsocks://)
+    """
+    clean_uri = (uri or "").strip()
+    if not clean_uri or clean_uri.lower() in {"none", "null", "false", "0", "disable", "disabled"}:
+        yield None
+        return
+
+    scheme = urlsplit(clean_uri).scheme.lower()
+
+    # Direct proxy supported natively by requests / urllib3 / PySocks
+    if scheme in {"http", "https", "socks5", "socks5h", "socks4"}:
+        proxy_url = clean_uri
+        print(f"Using direct proxy for subscriptions: {scheme}://{urlsplit(clean_uri).netloc}", flush=True)
+        yield {"http": proxy_url, "https": proxy_url}
+        return
+
+    if scheme in SUPPORTED_HY2:
+        backend = "singbox"
+        outbound = hysteria2_outbound(clean_uri)
+    elif scheme in SUPPORTED_XRAY:
+        backend = "xray"
+        _, outbound = xray_outbound(clean_uri)
+    else:
+        raise ValueError(f"unsupported proxy scheme: '{scheme}' in proxy URI")
+
+    with ProxyRunner(backend, outbound) as port:
         proxy_url = f"socks5h://127.0.0.1:{port}"
         print(f"Subscription fetch proxy started through {scheme} on 127.0.0.1:{port}", flush=True)
         yield {"http": proxy_url, "https": proxy_url}
 
-def load_all_nodes(path: Path, timeout: float) -> list[str]:
+
+def load_all_nodes(path: Path, timeout: float, proxy_uri: str | None = None) -> list[str]:
     nodes = []
     if path.exists():
         nodes += extract_proxy_links(path.read_text(encoding="utf-8"))
 
     nodes += extract_proxy_links("\n".join(env_lines("NODE_URIS")))
 
-    # subscription fetch, optionally via PROXY_URI
-    proxy_uri = os.environ.get("PROXY_URI", "").strip()
-    fetch_proxies: dict[str, str] | None = None
-    proxy_ctx = subscription_proxy(proxy_uri) if proxy_uri else contextlib.nullcontext(None)
+    # Resolve proxy URI (from function param or PROXY_URI env var)
+    if proxy_uri is None:
+        proxy_uri = os.environ.get("PROXY_URI", "").strip()
+    else:
+        proxy_uri = proxy_uri.strip()
 
-    try:
-        with proxy_ctx as proxies:
-            fetch_proxies = proxies
-            subscription_urls = env_lines("NODE_URLS")
-            user_agent = os.environ.get("USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
+    subscription_urls = env_lines("NODE_URLS")
+    if subscription_urls:
+        user_agent = os.environ.get("USER_AGENT", "HiddifyNext/2.0.5").strip() or "HiddifyNext/2.0.5"
+        is_proxy_configured = bool(proxy_uri and proxy_uri.lower() not in {"none", "null", "false", "0", "disable", "disabled"})
+
+        if is_proxy_configured:
+            try:
+                with subscription_proxy(proxy_uri) as proxies:
+                    for sub_url in subscription_urls:
+                        try:
+                            host = urlsplit(sub_url).hostname or "subscription"
+                            print(f"Fetching subscription from {host} with User-Agent: {user_agent}", flush=True)
+                            content = fetch_subscription(sub_url, user_agent, timeout, proxies)
+                            extracted = extract_proxy_links(content)
+                            print(f"  extracted {len(extracted)} link(s)", flush=True)
+                            nodes += extracted
+                        except Exception as exc:
+                            host = urlsplit(sub_url).hostname or "subscription"
+                            print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"Warning: Failed to start subscription proxy ({exc}). Falling back to direct connection...", file=sys.stderr, flush=True)
+                for sub_url in subscription_urls:
+                    try:
+                        host = urlsplit(sub_url).hostname or "subscription"
+                        print(f"Fetching subscription directly from {host} with User-Agent: {user_agent}", flush=True)
+                        content = fetch_subscription(sub_url, user_agent, timeout, None)
+                        extracted = extract_proxy_links(content)
+                        print(f"  extracted {len(extracted)} link(s)", flush=True)
+                        nodes += extracted
+                    except Exception as exc:
+                        host = urlsplit(sub_url).hostname or "subscription"
+                        print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
+        else:
+            print("No subscription proxy configured (field is empty), fetching subscriptions directly.", flush=True)
             for sub_url in subscription_urls:
                 try:
                     host = urlsplit(sub_url).hostname or "subscription"
-                    print(f"Fetching subscription from {host} with User-Agent: {user_agent}", flush=True)
-                    content = fetch_subscription(sub_url, user_agent, timeout, fetch_proxies)
+                    print(f"Fetching subscription directly from {host} with User-Agent: {user_agent}", flush=True)
+                    content = fetch_subscription(sub_url, user_agent, timeout, None)
                     extracted = extract_proxy_links(content)
                     print(f"  extracted {len(extracted)} link(s)", flush=True)
                     nodes += extracted
                 except Exception as exc:
                     host = urlsplit(sub_url).hostname or "subscription"
                     print(f"  failed to fetch subscription from {host}: {exc}", file=sys.stderr, flush=True)
-    except Exception as exc:
-        print(f"Failed to start subscription proxy: {exc}", file=sys.stderr, flush=True)
 
     seen, out = set(), []
     for n in nodes:
-        if n not in seen: seen.add(n); out.append(n)
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
     return out
 
 
 # ---------- main ----------
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="nodes.txt")
-    ap.add_argument("--output", default="output/sub.txt")
-    ap.add_argument("--report", default="output/report.md")
-    ap.add_argument("--test-url", default="https://www.gstatic.com/generate_204")
-    ap.add_argument("--timeout", type=float, default=12.0)
-    ap.add_argument("--concurrency", type=int, default=10)
+    ap = argparse.ArgumentParser(description="Check proxy URIs with Xray Core and sing-box.")
+    ap.add_argument("--input", default="nodes.txt", help="Input file containing node URIs (default: nodes.txt)")
+    ap.add_argument("--output", default="output/sub.txt", help="Output path for working URIs (default: output/sub.txt)")
+    ap.add_argument("--report", default="output/report.md", help="Output path for markdown report (default: output/report.md)")
+    ap.add_argument("--test-url", default=os.environ.get("TEST_URL", "https://www.gstatic.com/generate_204"), help="URL used to test node connectivity")
+    ap.add_argument("--timeout", type=float, default=float(os.environ.get("TIMEOUT_SECONDS", 12.0)), help="Timeout in seconds for node checks")
+    ap.add_argument("--concurrency", type=int, default=10, help="Number of concurrent check threads")
+    ap.add_argument("--proxy", "--proxy-uri", dest="proxy_uri", default=None, help="Optional proxy URI for fetching subscriptions (defaults to PROXY_URI env)")
     args = ap.parse_args(argv)
 
-    nodes = load_all_nodes(Path(args.input), args.timeout)
+    nodes = load_all_nodes(Path(args.input), args.timeout, proxy_uri=args.proxy_uri)
     print(f"Loaded {len(nodes)} node(s), concurrency={args.concurrency}")
 
     results: list[NodeResult | None] = [None] * len(nodes)
@@ -501,25 +601,33 @@ def main(argv: list[str]) -> int:
     with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         futs = [ex.submit(worker, i, u) for i, u in enumerate(nodes)]
         for f in as_completed(futs):
-            i, r = f.result(); results[i] = r
+            i, r = f.result()
+            results[i] = r
 
     results = [r for r in results if r]  # type: ignore
 
-    # ---- bug-fix: write URIs with updated names (flag + display name) ----
+    # ---- write URIs with updated names (flag + display name) ----
     working_uris = [uri_with_name(r.uri, r.name) for r in results if r.ok]
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text("\n".join(working_uris) + ("\n" if working_uris else ""), encoding="utf-8")
 
-    report = ["# Node check report", "", f"Total: {len(results)}", f"Working: {len(working_uris)}", "",
+    report = [
+        "# Node check report",
+        "",
+        f"Total: {len(results)}",
+        f"Working: {len(working_uris)}",
+        "",
         "| # | Status | Scheme | Name | Latency | HTTP | Error |",
-        "|---:|:---:|---|---|---:|---:|:---|"]
+        "|---:|:---:|---|---|---:|---:|:---|",
+    ]
     for r in results:
         report.append(f"| {r.index} | {'✅' if r.ok else '❌'} | `{r.scheme}` | {r.name} | {r.latency_ms or ''} | {r.status_code or ''} | {(r.error or '').replace('|','\\/')} |")
     Path(args.report).write_text("\n".join(report) + "\n", encoding="utf-8")
 
     print(f"Working: {len(working_uris)}/{len(results)}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
