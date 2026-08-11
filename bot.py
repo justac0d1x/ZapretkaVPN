@@ -2,7 +2,7 @@
 """
 ZapretkaVPN Bot — конструктор кастомных подписок.
 До 5 групп (протокол + страна + количество) в одной подписке.
-Компактный формат URL: /sub/<AES128_ENCRYPTED_TOKEN>
+Компактный зашифрованный формат URL: /sub/<SHORT_ENCRYPTED_TOKEN>
 """
 
 import os
@@ -10,12 +10,10 @@ import re
 import base64
 import json
 import hashlib
+import hmac
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from urllib.parse import unquote, urlparse
-
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -37,52 +35,31 @@ CONFIG = {
     "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
-    "AES_KEY": os.getenv("AES_KEY") or os.getenv("AES_SECRET_KEY") or os.getenv("SECRET_KEY", "ZapretkaAES128SecretKey"),
+    "AES_KEY": os.getenv("AES_KEY") or os.getenv("AES_SECRET_KEY") or os.getenv("SECRET_KEY", "ZapretkaSecretKey"),
 }
 
 MAX_RULES = 5
 
-# ==================== AES-128 ENCRYPTION ====================
-def get_aes_key() -> bytes:
-    """Генерирует 16-байтный ключ (128 бит) для AES-128 на основе переменной окружения."""
-    raw_key = CONFIG["AES_KEY"]
-    return hashlib.sha256(raw_key.encode("utf-8")).digest()[:16]
-
-
+# ==================== УЛЬТРА-КОРОТКОЕ ШИФРОВАНИЕ ====================
 def encrypt_spec(spec: str) -> str:
-    """Шифрует спецификацию подписки (например, 'tCA1' или 'vRU5:tNL3') алгоритмом AES-128-CBC."""
-    key = get_aes_key()
-    iv = os.urandom(16)
-    padder = padding.PKCS7(128).padder()
-    padded_data = padder.update(spec.encode("utf-8")) + padder.finalize()
-
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-    encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
-
-    # URL-safe Base64 без лишних знаков '=' на конце
-    token = base64.urlsafe_b64encode(iv + ciphertext).decode("utf-8").rstrip("=")
-    return token
+    """Шифрует спецификацию в короткий URL-safe токен (~11 символов вместо 44)."""
+    key = (CONFIG["AES_KEY"] or "ZapretkaSecretKey").encode("utf-8")
+    salt = os.urandom(4)
+    keystream = hmac.new(key, salt, hashlib.sha256).digest()
+    encrypted = bytes(b ^ k for b, k in zip(spec.encode("utf-8"), keystream))
+    return base64.urlsafe_b64encode(salt + encrypted).decode("utf-8").rstrip("=")
 
 
 def decrypt_spec(token: str) -> str:
-    """Расшифровывает токен подписки обратно в спецификацию правил."""
+    """Расшифровывает токен обратно в спецификацию правил подписки."""
     token_padded = token.strip() + "=" * (-len(token.strip()) % 4)
     raw = base64.urlsafe_b64decode(token_padded)
-    if len(raw) < 32:
-        raise ValueError("Token too short for AES-128-CBC")
-
-    iv = raw[:16]
-    ciphertext = raw[16:]
-    key = get_aes_key()
-
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
-    decryptor = cipher.decryptor()
-    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
-
-    unpadder = padding.PKCS7(128).unpadder()
-    data = unpadder.update(padded_data) + unpadder.finalize()
-    return data.decode("utf-8")
+    if len(raw) < 5:
+        raise ValueError("Token too short")
+    salt, encrypted = raw[:4], raw[4:]
+    key = (CONFIG["AES_KEY"] or "ZapretkaSecretKey").encode("utf-8")
+    keystream = hmac.new(key, salt, hashlib.sha256).digest()
+    return bytes(b ^ k for b, k in zip(encrypted, keystream)).decode("utf-8")
 
 
 # ==================== COMPACT SPEC ====================
@@ -327,10 +304,10 @@ def parse_vmess(link: str) -> Optional[Dict]:
 _PARSE_MAP = {
     "vless://": (_parse_url_node, "vless", None),
     "trojan://": (_parse_url_node, "trojan", None),
-    "ss://": (_parse_url_node, "ss", None),
+    "ss://":     (_parse_url_node, "ss", None),
     "hysteria2://": (_parse_url_node, "hysteria2", None),
-    "hy2://": (_parse_url_node, "hysteria2", "hy2://"),
-    "vmess://": (parse_vmess, None, None),
+    "hy2://":    (_parse_url_node, "hysteria2", "hy2://"),
+    "vmess://":  (parse_vmess, None, None),
 }
 
 
@@ -420,7 +397,7 @@ app = FastAPI(title=CONFIG["SERVICE_NAME"])
 
 @app.get("/sub/{spec:path}")
 async def get_subscription(spec: str):
-    # 1. Пробуем расшифровать токен через AES-128
+    # 1. Пробуем расшифровать токен
     decrypted_spec = None
     try:
         decrypted_spec = decrypt_spec(spec)
@@ -491,7 +468,7 @@ if CONFIG["BOT_TOKEN"]:
             f"🔹 <b>Что можно сделать:</b>\n"
             f"• Собрать подписку из нескольких групп серверов (до {MAX_RULES})\n"
             f"• Выбрать протокол, страну и количество серверов\n"
-            f"• Получить защищенную ссылку + QR-код\n\n"
+            f"• Получить короткую зашифрованную ссылку + QR-код\n\n"
             f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов\n\n"
             f"Готовы начать?"
         )
