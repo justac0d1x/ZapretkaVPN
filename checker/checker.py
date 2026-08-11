@@ -387,7 +387,7 @@ def test_via_socks(port: int, test_url: str, timeout: float) -> tuple[int, int]:
         return 0, 0
 
 
-def check_node(index: int, uri: str, test_url: str, timeout: float) -> NodeResult:
+def check_node(index: int, uri: str, test_url: str, timeout: float, max_ping: int | None = None) -> NodeResult:
     name = node_name(uri, f"node-{index}")
     scheme = urlsplit(uri).scheme.lower()
     try:
@@ -400,8 +400,14 @@ def check_node(index: int, uri: str, test_url: str, timeout: float) -> NodeResul
         with ProxyRunner(backend, outbound) as port:
             status, latency = test_via_socks(port, test_url, timeout)
 
-        ok = 200 <= status < 400 or status == 204
-        return NodeResult(index, name, uri, scheme, ok, latency, status, None if ok else f"bad HTTP {status}")
+        http_ok = (200 <= status < 400 or status == 204)
+        if not http_ok:
+            return NodeResult(index, name, uri, scheme, False, latency, status, f"bad HTTP {status}")
+
+        if max_ping and max_ping > 0 and latency and latency > max_ping:
+            return NodeResult(index, name, uri, scheme, False, latency, status, f"ping {latency}ms > {max_ping}ms")
+
+        return NodeResult(index, name, uri, scheme, True, latency, status, None)
     except Exception as exc:
         return NodeResult(index, name, uri, scheme, False, error=str(exc))
 
@@ -586,15 +592,16 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--timeout", type=float, default=float(os.environ.get("TIMEOUT_SECONDS", 12.0)), help="Timeout in seconds for node checks")
     ap.add_argument("--concurrency", type=int, default=10, help="Number of concurrent check threads")
     ap.add_argument("--proxy", "--proxy-uri", dest="proxy_uri", default=None, help="Optional proxy URI for fetching subscriptions (defaults to PROXY_URI env)")
+    ap.add_argument("--max-ping", type=int, default=int(os.environ.get("MAX_PING", 0) or 0), help="Maximum allowed ping in ms; nodes with higher ping are marked failed (default: 0 / disabled)")
     args = ap.parse_args(argv)
 
     nodes = load_all_nodes(Path(args.input), args.timeout, proxy_uri=args.proxy_uri)
-    print(f"Loaded {len(nodes)} node(s), concurrency={args.concurrency}")
+    print(f"Loaded {len(nodes)} node(s), concurrency={args.concurrency}, timeout={args.timeout}s" + (f", max_ping={args.max_ping}ms" if args.max_ping > 0 else ""))
 
     results: list[NodeResult | None] = [None] * len(nodes)
 
     def worker(idx: int, uri: str):
-        res = check_node(idx + 1, uri, args.test_url, args.timeout)
+        res = check_node(idx + 1, uri, args.test_url, args.timeout, max_ping=args.max_ping)
         print(f"[{idx+1}/{len(nodes)}] {res.name} → {'OK %dms' % res.latency_ms if res.ok else 'FAIL ' + (res.error or '')}", flush=True)
         return idx, res
 
