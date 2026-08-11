@@ -2,16 +2,20 @@
 """
 ZapretkaVPN Bot — конструктор кастомных подписок.
 До 5 групп (протокол + страна + количество) в одной подписке.
-Компактный формат URL: /sub/vRU5:tNL3:sUS10
+Компактный формат URL: /sub/<AES128_ENCRYPTED_TOKEN>
 """
 
 import os
 import re
 import base64
 import json
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from urllib.parse import unquote, urlparse
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -29,13 +33,57 @@ from io import BytesIO
 # ==================== CONFIG ====================
 CONFIG = {
     "SERVICE_NAME": os.getenv("SERVICE_NAME", "Zapretka"),
-    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.2.0-py"),
+    "SERVICE_VERSION": os.getenv("SERVICE_VERSION", "5.3.0-py"),
     "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
+    "AES_KEY": os.getenv("AES_KEY") or os.getenv("AES_SECRET_KEY") or os.getenv("SECRET_KEY", "ZapretkaAES128SecretKey"),
 }
 
 MAX_RULES = 5
+
+# ==================== AES-128 ENCRYPTION ====================
+def get_aes_key() -> bytes:
+    """Генерирует 16-байтный ключ (128 бит) для AES-128 на основе переменной окружения."""
+    raw_key = CONFIG["AES_KEY"]
+    return hashlib.sha256(raw_key.encode("utf-8")).digest()[:16]
+
+
+def encrypt_spec(spec: str) -> str:
+    """Шифрует спецификацию подписки (например, 'tCA1' или 'vRU5:tNL3') алгоритмом AES-128-CBC."""
+    key = get_aes_key()
+    iv = os.urandom(16)
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(spec.encode("utf-8")) + padder.finalize()
+
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+
+    # URL-safe Base64 без лишних знаков '=' на конце
+    token = base64.urlsafe_b64encode(iv + ciphertext).decode("utf-8").rstrip("=")
+    return token
+
+
+def decrypt_spec(token: str) -> str:
+    """Расшифровывает токен подписки обратно в спецификацию правил."""
+    token_padded = token.strip() + "=" * (-len(token.strip()) % 4)
+    raw = base64.urlsafe_b64decode(token_padded)
+    if len(raw) < 32:
+        raise ValueError("Token too short for AES-128-CBC")
+
+    iv = raw[:16]
+    ciphertext = raw[16:]
+    key = get_aes_key()
+
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+
+    unpadder = padding.PKCS7(128).unpadder()
+    data = unpadder.update(padded_data) + unpadder.finalize()
+    return data.decode("utf-8")
+
 
 # ==================== COMPACT SPEC ====================
 # a = все протоколы, v = vless, m = vmess, t = trojan, s = ss, h = hysteria2
@@ -111,8 +159,7 @@ def make_telegram_qr(
     if not data:
         raise ValueError("Строка data не должна быть пустой")
 
-    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H,
-                        box_size=1, border=0)
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=1, border=0)
     qr.add_data(data)
     qr.make(fit=True)
     matrix = qr.get_matrix()
@@ -280,10 +327,10 @@ def parse_vmess(link: str) -> Optional[Dict]:
 _PARSE_MAP = {
     "vless://": (_parse_url_node, "vless", None),
     "trojan://": (_parse_url_node, "trojan", None),
-    "ss://":     (_parse_url_node, "ss", None),
+    "ss://": (_parse_url_node, "ss", None),
     "hysteria2://": (_parse_url_node, "hysteria2", None),
-    "hy2://":    (_parse_url_node, "hysteria2", "hy2://"),
-    "vmess://":  (parse_vmess, None, None),
+    "hy2://": (_parse_url_node, "hysteria2", "hy2://"),
+    "vmess://": (parse_vmess, None, None),
 }
 
 
@@ -373,10 +420,19 @@ app = FastAPI(title=CONFIG["SERVICE_NAME"])
 
 @app.get("/sub/{spec:path}")
 async def get_subscription(spec: str):
+    # 1. Пробуем расшифровать токен через AES-128
+    decrypted_spec = None
     try:
-        nodes = filter_nodes_by_spec(spec)
+        decrypted_spec = decrypt_spec(spec)
+    except Exception:
+        # 2. Обратная совместимость с открытым форматом спецификаций (например, tCA1)
+        decrypted_spec = spec
+
+    try:
+        nodes = filter_nodes_by_spec(decrypted_spec)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid spec format")
+
     content = generate_subscription(nodes)
     if not content:
         raise HTTPException(status_code=404, detail="No nodes found")
@@ -426,7 +482,7 @@ if CONFIG["BOT_TOKEN"]:
             lines.append(f"  {i}. {rule_display(rule)}")
         return "\n".join(lines)
 
-    # ==================== НОВОЕ ПРИВЕТСТВИЕ ====================
+    # ==================== ПРИВЕТСТВИЕ ====================
     def _welcome_text() -> str:
         stats = get_stats()
         return (
@@ -435,7 +491,7 @@ if CONFIG["BOT_TOKEN"]:
             f"🔹 <b>Что можно сделать:</b>\n"
             f"• Собрать подписку из нескольких групп серверов (до {MAX_RULES})\n"
             f"• Выбрать протокол, страну и количество серверов\n"
-            f"• Получить красивую ссылку + QR-код\n\n"
+            f"• Получить защищенную ссылку + QR-код\n\n"
             f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов\n\n"
             f"Готовы начать?"
         )
@@ -454,8 +510,6 @@ if CONFIG["BOT_TOKEN"]:
             await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         else:
             await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-
 
     # ---------- keyboards ----------
 
@@ -518,24 +572,15 @@ if CONFIG["BOT_TOKEN"]:
         current = max(min_count, min(current, max_available))
 
         rows = []
-
-        # Верхняя строка: -   текущее   +
         row = [
             InlineKeyboardButton(text="➖", callback_data="count:dec"),
             InlineKeyboardButton(text=f"📦 {current}", callback_data="noop"),
             InlineKeyboardButton(text="➕", callback_data="count:inc"),
         ]
         rows.append(row)
-
-        # Кнопка "Все"
         rows.append([InlineKeyboardButton(text=f"🌍 Все ({max_available})", callback_data="count:all")])
-
-        # Кнопка подтверждения
         rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
-
-        # Назад
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:country")])
-
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def review_keyboard(n: int) -> InlineKeyboardMarkup:
@@ -555,7 +600,8 @@ if CONFIG["BOT_TOKEN"]:
 
     async def send_result(chat_id: int, rules: list):
         spec = build_compact_spec(rules)
-        url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{spec}"
+        encrypted_token = encrypt_spec(spec)
+        url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{encrypted_token}"
 
         rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
         caption = (
@@ -581,7 +627,6 @@ if CONFIG["BOT_TOKEN"]:
     async def cmd_start(message: types.Message):
         await _show_welcome(message, edit=False)
 
-    # ==================== ЕДИНАЯ ФУНКЦИЯ ВЫБОРА ПРОТОКОЛА ====================
     async def show_protocol_selection(target, chat_id: int, edit: bool = False):
         """Единая функция показа экрана выбора протокола"""
         rule_num = _rule_num(chat_id)
@@ -594,7 +639,6 @@ if CONFIG["BOT_TOKEN"]:
         else:
             await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
-    # Новая кнопка "Начать конструктор"
     @dp.callback_query(F.data == "start_constructor")
     async def cb_start_constructor(query: types.CallbackQuery):
         await query.answer()
@@ -620,7 +664,7 @@ if CONFIG["BOT_TOKEN"]:
         country = query.data.split(":")[1]
         sel = _sess(query.message.chat.id)
         sel["current"]["country"] = country
-        sel["current"]["count"] = 1                    # ← Сбрасываем счётчик при выборе новой страны
+        sel["current"]["count"] = 1
         proto = sel["current"].get("protocol", "all")
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
@@ -654,7 +698,6 @@ if CONFIG["BOT_TOKEN"]:
     async def cb_noop(query: types.CallbackQuery):
         await query.answer()
 
-    # ==================== ИНТЕРАКТИВНЫЙ ВЫБОР КОЛИЧЕСТВА ====================
     @dp.callback_query(F.data.startswith("count:"))
     async def cb_count_interactive(query: types.CallbackQuery):
         sel = _sess(query.message.chat.id)
@@ -668,10 +711,8 @@ if CONFIG["BOT_TOKEN"]:
 
         current = sel["current"].get("count", 1)
         min_count = 1
-
         data = query.data.split(":")[1]
 
-        # Умный шаг: 1 при <5, 5 при >=5
         if current < 5:
             step = 1
         else:
@@ -686,16 +727,13 @@ if CONFIG["BOT_TOKEN"]:
             if current <= 5:
                 current = max(current - 1, min_count)
             else:
-                # Отматываем к ближайшему меньшему кратному 5
                 current = max(((current - 1) // 5) * 5, 5)
 
-        # Защита: никогда не оставляем значения 6,7,8,9
         if 5 < current < 10:
             current = 10 if data == "inc" else 5
         elif data == "all":
             current = max_available
         elif data == "confirm":
-            # Сохраняем и переходим к обзору
             sel["rules"].append({
                 "protocol": proto,
                 "country": country,
@@ -710,9 +748,7 @@ if CONFIG["BOT_TOKEN"]:
             await query.answer()
             return
 
-        # Обновляем текущее значение
         sel["current"]["count"] = current
-
         country_display = "🌍 Любая" if country == "all" else f"{get_flag_emoji(country)} {code_to_name(country)}"
 
         try:
@@ -723,7 +759,6 @@ if CONFIG["BOT_TOKEN"]:
                 reply_markup=count_keyboard(proto, country, current, max_available),
             )
         except Exception:
-            # Игнорируем ошибку "message is not modified"
             pass
 
         await query.answer()
@@ -770,9 +805,9 @@ if CONFIG["BOT_TOKEN"]:
             await send_result(chat_id, rules)
         except Exception as e:
             print(f"❌ Ошибка генерации QR: {e}")
-            # Фолбэк: отправляем только текст
             spec = build_compact_spec(rules)
-            url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{spec}"
+            encrypted_token = encrypt_spec(spec)
+            url = f"{CONFIG['BASE_URL'].rstrip('/')}/sub/{encrypted_token}"
             rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
             try:
                 await bot.send_message(
@@ -790,7 +825,6 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
-        # Возвращаем к приветствию (а не сразу к конструктору)
         try:
             await _show_welcome(query.message, edit=True)
         except Exception:
@@ -806,7 +840,7 @@ if CONFIG["BOT_TOKEN"]:
         await query.answer()
         await show_protocol_selection(query.message, query.message.chat.id, edit=True)
 
-    @dp.callback_query(F.data == "back:country")
+    @dp.callback_query(F.data.startswith("back:country"))
     async def cb_back_country(query: types.CallbackQuery):
         sel = _sess(query.message.chat.id)
         protocol = sel.get("current", {}).get("protocol", "all")
