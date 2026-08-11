@@ -480,13 +480,17 @@ if CONFIG["BOT_TOKEN"]:
 
     async def _show_welcome(target, edit: bool = False):
         """Показывает красивое приветственное сообщение"""
-        sessions.pop(target.chat.id, None)
+        chat_id = target.chat.id if hasattr(target, "chat") else target.from_user.id
+        sessions.pop(chat_id, None)
         text = _welcome_text()
         kb = welcome_keyboard()
         if edit:
             await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
         else:
-            await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            if hasattr(target, "answer") and not isinstance(target, types.CallbackQuery):
+                await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
     # ---------- keyboards ----------
 
@@ -582,9 +586,9 @@ if CONFIG["BOT_TOKEN"]:
 
         rules_text = "\n".join(f"  • {rule_display(r)}" for r in rules)
         caption = (
-            f"<blockquote>Ваша подписка готова!</blockquote>\n\n"
+            f"<blockquote><b>✅ Ваша подписка готова!</b></blockquote>\n\n"
             f"{rules_text}\n\n"
-            f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b> или <b>INCY</b>."
+            f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b>, <b>INCY</b> или <b>Hiddify</b>."
         )
 
         buf = make_telegram_qr(url, background_image=_QR_BACKGROUND)
@@ -594,7 +598,7 @@ if CONFIG["BOT_TOKEN"]:
             caption=caption,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                [InlineKeyboardButton(text="🔵 🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
                 [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
             ]),
         )
@@ -790,12 +794,12 @@ if CONFIG["BOT_TOKEN"]:
             try:
                 await bot.send_message(
                     chat_id,
-                    f"<blockquote>Ваша подписка готова!</blockquote>\n\n"
+                    f"<blockquote><b>✅ Ваша подписка готова!</b></blockquote>\n\n"
                     f"{rules_text}\n\n"
-                    f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b> или <b>INCY</b>.",
+                    f"Скопируйте ссылку по кнопке ниже и вставьте её в приложение <b>HAPP</b>, <b>INCY</b> или <b>Hiddify</b>.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
+                        [InlineKeyboardButton(text="🔵 🔗 Скопировать ссылку", copy_text=CopyTextButton(text=url))],
                         [InlineKeyboardButton(text="🔄 Создать ещё", callback_data="restart")],
                     ]),
                 )
@@ -805,15 +809,16 @@ if CONFIG["BOT_TOKEN"]:
 
     @dp.callback_query(F.data == "restart")
     async def cb_restart(query: types.CallbackQuery):
-        try:
-            await _show_welcome(query.message, edit=True)
-        except Exception:
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
-            await _show_welcome(query.message, edit=False)
+        """Отправляет новое сообщение для создания следующей подписки, сохраняя предыдущий QR в чате."""
         await query.answer()
+        chat_id = query.message.chat.id
+        sessions.pop(chat_id, None)
+        await bot.send_message(
+            chat_id,
+            _welcome_text(),
+            parse_mode=ParseMode.HTML,
+            reply_markup=welcome_keyboard(),
+        )
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
