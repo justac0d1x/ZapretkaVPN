@@ -475,7 +475,7 @@ if CONFIG["BOT_TOKEN"]:
 
     def welcome_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать", callback_data="start_constructor")]
+            [InlineKeyboardButton(text="🚀 Начать", callback_data="start_constructor", style="primary")]
         ])
 
     async def _show_welcome(target, edit: bool = False):
@@ -548,19 +548,19 @@ if CONFIG["BOT_TOKEN"]:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def count_keyboard(protocol: str, country: str, current: int = 1, max_available: int = 0):
-        """Красивый селектор количества с + / -"""
+        """Красивый селектор количества с цветными + / - (красный и зеленый)"""
         min_count = 1
         current = max(min_count, min(current, max_available))
 
         rows = []
         row = [
-            InlineKeyboardButton(text="➖", callback_data="count:dec"),
+            InlineKeyboardButton(text="➖", callback_data="count:dec", style="danger"),
             InlineKeyboardButton(text=f"📦 {current}", callback_data="noop"),
-            InlineKeyboardButton(text="➕", callback_data="count:inc"),
+            InlineKeyboardButton(text="➕", callback_data="count:inc", style="success"),
         ]
         rows.append(row)
         rows.append([InlineKeyboardButton(text=f"🌍 Все ({max_available})", callback_data="count:all")])
-        rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
+        rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm", style="primary")])
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:country")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -569,10 +569,10 @@ if CONFIG["BOT_TOKEN"]:
         row = []
         if n < MAX_RULES:
             row.append(InlineKeyboardButton(text="➕ Ещё", callback_data="add"))
-        row.append(InlineKeyboardButton(text="🔗 Создать", callback_data="generate"))
+        row.append(InlineKeyboardButton(text="🔗 Создать", callback_data="generate", style="primary"))
         rows.append(row)
         if n > 0:
-            rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove")])
+            rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove", style="danger")])
         if n > 1:
             rows.append([InlineKeyboardButton(text="🏠 В начало", callback_data="restart")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -761,7 +761,7 @@ if CONFIG["BOT_TOKEN"]:
                 "📋 Список пуст. Начните заново:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="🔄 Начать", callback_data="restart")
+                    InlineKeyboardButton(text="🔄 Начать", callback_data="restart", style="primary")
                 ]]),
             )
         else:
