@@ -454,7 +454,7 @@ if CONFIG["BOT_TOKEN"]:
         return f"{country} {proto} × {count}"
 
     def _review_text(rules: list) -> str:
-        lines = [f"📋 <b>Подписка</b> ({len(rules)}/{MAX_RULES}):"]
+        lines = [f"📋 <b>Подписка</b> ({len(rules)}/{MAX_RULES}):", ""]
         for i, rule in enumerate(rules, 1):
             lines.append(f"  {i}. {rule_display(rule)}")
         return "\n".join(lines)
@@ -673,7 +673,7 @@ if CONFIG["BOT_TOKEN"]:
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну:",
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(protocol),
+            reply_markup=country_keyboard(protocol, page),
         )
         await query.answer()
 
