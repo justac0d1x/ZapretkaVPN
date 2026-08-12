@@ -513,7 +513,9 @@ if CONFIG["BOT_TOKEN"]:
         if row:
             rows.append(row)
         if existing_rules > 0:
-            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="restart")])
+            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:to_review")])
+        else:
+            rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:to_welcome")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def country_keyboard(protocol: str, page: int = 0):
@@ -819,6 +821,28 @@ if CONFIG["BOT_TOKEN"]:
             parse_mode=ParseMode.HTML,
             reply_markup=welcome_keyboard(),
         )
+
+    @dp.callback_query(F.data == "back:to_review")
+    async def cb_back_to_review(query: types.CallbackQuery):
+        """Возвращает из выбора протокола следующей группы обратно к списку уже созданных групп."""
+        sel = _sess(query.message.chat.id)
+        sel["current"] = {}
+        rules = sel.get("rules", [])
+        if not rules:
+            await _show_welcome(query.message, edit=True)
+        else:
+            await query.message.edit_text(
+                _review_text(rules),
+                parse_mode=ParseMode.HTML,
+                reply_markup=review_keyboard(len(rules)),
+            )
+        await query.answer()
+
+    @dp.callback_query(F.data == "back:to_welcome")
+    async def cb_back_to_welcome(query: types.CallbackQuery):
+        """Возвращает из группы 1 обратно к экрану приветствия."""
+        await _show_welcome(query.message, edit=True)
+        await query.answer()
 
     @dp.callback_query(F.data == "back:protocol")
     async def cb_back_protocol(query: types.CallbackQuery):
