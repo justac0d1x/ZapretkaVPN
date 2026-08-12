@@ -36,6 +36,7 @@ CONFIG = {
     "BASE_URL": os.getenv("BASE_URL") or os.getenv("RENDER_EXTERNAL_URL", ""),
     "PORT": int(os.getenv("PORT", 8000)),
     "AES_KEY": os.getenv("AES_KEY") or os.getenv("AES_SECRET_KEY") or os.getenv("SECRET_KEY", "ZapretkaSecretKey"),
+    "SUPPORT_URL": os.getenv("SUPPORT_URL") or os.getenv("BOT_URL") or "https://t.me/happ_chat",
 }
 
 MAX_RULES = 5
@@ -370,7 +371,29 @@ def filter_nodes_by_spec(spec: str) -> List[Dict]:
 
 
 def generate_subscription(nodes: List[Dict]) -> str:
-    return "\n".join(n["raw"] for n in nodes) if nodes else ""
+    if not nodes:
+        return ""
+
+    service_name = CONFIG["SERVICE_NAME"]
+    profile_title = f"{service_name} VPN"
+    profile_title_b64 = base64.b64encode(profile_title.encode("utf-8")).decode("utf-8")
+
+    announce_text = "Если подписка не работает, нажмите 🔄\nСпасибо за использование! ❤"
+    announce_b64 = base64.b64encode(announce_text.encode("utf-8")).decode("utf-8")
+
+    support_url = CONFIG.get("SUPPORT_URL") or "https://t.me/happ_chat"
+    expire_timestamp = 4102444799  # 31.12.2099 23:59:59 UTC
+
+    headers = [
+        f"#profile-title: base64:{profile_title_b64}",
+        "#profile-update-interval: 6",
+        f"#subscription-userinfo: upload=0; download=0; total=0; expire={expire_timestamp}",
+        f"#support-url: {support_url}",
+        f"#announce: base64:{announce_b64}",
+    ]
+
+    nodes_content = "\n".join(n["raw"] for n in nodes)
+    return "\n".join(headers) + "\n\n" + nodes_content
 
 
 def get_stats(protocol: str = "all"):
@@ -413,7 +436,21 @@ async def get_subscription(spec: str):
     content = generate_subscription(nodes)
     if not content:
         raise HTTPException(status_code=404, detail="No nodes found")
-    return PlainTextResponse(content, media_type="text/plain")
+
+    service_name = CONFIG["SERVICE_NAME"]
+    profile_title_b64 = base64.b64encode(f"{service_name} VPN".encode("utf-8")).decode("utf-8")
+    support_url = CONFIG.get("SUPPORT_URL") or "https://t.me/happ_chat"
+    expire_timestamp = 4102444799
+
+    response_headers = {
+        "profile-title": f"base64:{profile_title_b64}",
+        "profile-update-interval": "6",
+        "subscription-userinfo": f"upload=0; download=0; total=0; expire={expire_timestamp}",
+        "support-url": support_url,
+        "profile-web-page-url": support_url,
+    }
+
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=response_headers)
 
 
 @app.get("/status")
@@ -875,6 +912,15 @@ async def main():
     print(f"📦 Загружено {len(NODES)} нод")
 
     if dp and bot:
+        try:
+            bot_info = await bot.get_me()
+            if bot_info.username:
+                if not os.getenv("SUPPORT_URL") and not os.getenv("BOT_URL"):
+                    CONFIG["SUPPORT_URL"] = f"https://t.me/{bot_info.username}"
+            print(f"🤖 Bot @{bot_info.username} ready, support URL: {CONFIG['SUPPORT_URL']}")
+        except Exception as e:
+            print(f"⚠️ Could not fetch bot info: {e}")
+
         print("🤖 Starting Telegram bot polling...")
         import asyncio
         asyncio.create_task(dp.start_polling(bot))
