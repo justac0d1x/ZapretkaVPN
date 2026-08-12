@@ -469,8 +469,7 @@ if CONFIG["BOT_TOKEN"]:
             f"• Собрать подписку из нескольких групп серверов (до {MAX_RULES})\n"
             f"• Выбрать протокол, страну и количество серверов\n"
             f"• Получить красивую подписку + QR-код\n\n"
-            f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов\n\n"
-            f"Готовы начать?"
+            f"📊 <b>Сейчас доступно:</b> <b>{stats['total']}</b> серверов"
         )
 
     def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -562,7 +561,7 @@ if CONFIG["BOT_TOKEN"]:
         ]
         rows.append(row)
         rows.append([InlineKeyboardButton(text=f"🌍 Все ({max_available})", callback_data="count:all")])
-        rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm", style="primary")])
+        rows.append([InlineKeyboardButton(text="✅ Выбрать", callback_data="count:confirm")])
         rows.append([InlineKeyboardButton(text="⏪ Назад", callback_data="back:country")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -571,10 +570,10 @@ if CONFIG["BOT_TOKEN"]:
         row = []
         if n < MAX_RULES:
             row.append(InlineKeyboardButton(text="➕ Ещё", callback_data="add"))
-        row.append(InlineKeyboardButton(text="🔗 Создать", callback_data="generate", style="primary"))
+        row.append(InlineKeyboardButton(text="🔗 Создать", callback_data="generate"))
         rows.append(row)
         if n > 0:
-            rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove", style="danger")])
+            rows.append([InlineKeyboardButton(text="🗑️ Удалить последнюю", callback_data="remove")])
         if n > 1:
             rows.append([InlineKeyboardButton(text="🏠 В начало", callback_data="restart")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -674,7 +673,7 @@ if CONFIG["BOT_TOKEN"]:
             f"<b>{PROTOCOL_LABELS.get(protocol, protocol)}</b>\n\n"
             f"Выберите страну:",
             parse_mode=ParseMode.HTML,
-            reply_markup=country_keyboard(protocol, page),
+            reply_markup=country_keyboard(protocol),
         )
         await query.answer()
 
